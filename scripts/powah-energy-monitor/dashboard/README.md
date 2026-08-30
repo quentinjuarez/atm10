@@ -1,10 +1,10 @@
 # Dashboard
 
-Receives both broadcast types on `CHANNEL`, renders both on a monitor. See [`../README.md`](../README.md) for the shared three-computer architecture.
+Receives both broadcast types — `CELL_CHANNEL` (6701) and `FLOW_CHANNEL` (6702) — renders both on a monitor. See [`../README.md`](../README.md) for the shared three-computer architecture and why each broadcast type gets its own channel.
 
 ## Wiring
 
-- **Modem** on any free side — just needs to be in range of both broadcasters' modems, no cable back to either of them.
+- **Modem** on any free side — just needs to be in range of both broadcasters' modems, no cable back to either of them. Both channels are opened on this one modem; no second modem needed.
 - **Monitor**, either directly adjacent to this computer or over a **Wired Modem + Networking Cable** run if you want the screen elsewhere in the base: a Wired Modem against the computer, one against the monitor, Networking Cable between them, then **right-click every modem once to activate it** (light turns on) — the single most common reason a script reports "no peripheral found."
 - **Monitor type.** An Advanced Monitor gives colored fill bars (green/yellow/red by charge level) and colored flow numbers; a plain Monitor works too, just without color — `monitor.isColor()` is checked and adapts automatically.
 - **Monitor size.** Built and tested at **5 blocks wide × 3 tall** with `setTextScale(1)` (`TEXT_SCALE` at the top of `run.lua`) — big, legible from a distance, and wide enough for the graph to show close to the full `FLOW_HISTORY_SECONDS` (60s) window. Whatever size you build, `render()` reads `monitor.getSize()` live and lays out (bar, warnings, graph) to fit — no size is hard-coded. Smaller monitors just show a narrower/shorter graph and may clip the per-source breakdown; there's no hard minimum, but a single block at scale 1 (~7×5 chars) is too small to be useful. Bump `TEXT_SCALE` up for even bigger text (at the cost of graph resolution) or down for a wider graph window.
@@ -68,3 +68,19 @@ Then `reboot` to activate `startup.lua`. To test a change without rebooting: `wg
 ## ADR: bounded log file (50 lines, rewritten in place)
 
 Same reasoning as both broadcasters: only problems get logged (guard transitions, crashes — "no signal" is shown on-screen per-stream, not logged per-tick), and the file is capped so a computer left running for days never slowly fills its disk.
+
+## ADR: redraw only on the timer, never directly on message receipt
+
+**Context.** Both broadcasters transmit roughly once a second, independently of each other and of the redraw timer. The original main loop called `safeRender()` immediately on every `modem_message`, on top of the existing `REDRAW_SECONDS` timer redraw — meaning up to 3 full redraws/sec (1 timer tick + up to 2 message-triggered), each one a `monitor.clear()` and a full re-layout including the graph, whether or not the display had actually changed since the last frame.
+
+**Decision.** `modem_message` handling now only updates state (`lastCell`/`lastFlow`/`flowHistory`/`hourMin`/`hourMax`, guard-transition logging) — it never calls `safeRender()`. Only the `redrawTimer` (still `REDRAW_SECONDS = 1`) draws. A message that just arrived shows up on the *next* tick, at most ~1s later.
+
+**Consequences.** Cuts redraw frequency from up to 3×/s down to a flat 1×/s regardless of how many broadcasters are transmitting or how often — the single biggest lever on total monitor-call volume, since every redraw includes the graph (see the batching ADR below). Trade-off: a state change can sit invisible for up to `REDRAW_SECONDS` before it's drawn, instead of appearing instantly — a non-issue at 1s for a monitor meant to be glanced at, not used as a stopwatch.
+
+## ADR: `drawGraph()` batches same-color runs per row instead of one monitor call per cell
+
+**Context.** The original `drawGraph()` looped `width * height` cells and issued `setCursorPos` + `setBackgroundColor` + `write` for *each one* — for a 5×3 monitor at `TEXT_SCALE = 1` (~43×19 characters, roughly an 8-row-tall graph after the rest of the layout), that's on the order of `43 * 8 * 3 ≈ 1000` monitor peripheral calls in a single graph draw, every redraw. Monitor API calls are real peripheral RPCs, not free function calls, and are the most commonly cited source of "why is my CC:Tweaked script laggy" in practice.
+
+**Decision.** Column heights/colors are computed once per draw in plain Lua (`barHeights`/`colColors` arrays — cheap, no peripheral calls). Each row is then drawn as **runs of contiguous same-color cells**: scan left to right, and only emit `setCursorPos` + `setBackgroundColor` + `write(string.rep(" ", runLength))` when the color changes, covering the whole run in one `write` instead of one per cell.
+
+**Consequences.** A row near the top of a typical bar chart — mostly empty, occasionally interrupted by a tall bar — collapses to 2-4 calls instead of `width` calls; a fully "busy" bottom row with many different-colored short bars is the worst case and doesn't improve much, but that's one row out of `height`, not all of them. Combined with the once-per-second redraw cap above, actual monitor call volume in normal operation is a small fraction of the original per-cell, up-to-3×/sec version. The column-height/color precompute is pure Lua and doesn't touch the monitor at all, so it's not part of this cost regardless of graph size.

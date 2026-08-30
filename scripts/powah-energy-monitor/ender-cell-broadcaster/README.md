@@ -33,7 +33,7 @@ Then `reboot` to activate `startup.lua`. To test a change without rebooting: `wg
 
 **Decision.** Split into two broadcaster scripts/computers, this one staying scoped to *only* the Ender Cell's storage level, tagging its payload `kind = "ender_cell"`. Flow reporting moved entirely to `../energy-detector-broadcaster/run.lua`.
 
-**Consequences.** This script no longer needs `peripheral.getNames()`-scanning or any Energy Detector at all — its only peripherals are the Block Reader and a modem. It can run on the same computer as the flow broadcaster or a completely different one; either way the dashboard just sees two `kind`s of message on the same channel.
+**Consequences.** This script no longer needs `peripheral.getNames()`-scanning or any Energy Detector at all — its only peripherals are the Block Reader and a modem. It can run on the same computer as the flow broadcaster or a completely different one; either way the dashboard listens for it on its own dedicated channel (see `../README.md`'s "two channels" ADR), separate from the flow broadcaster's.
 
 ## ADR: 1-second broadcast interval
 

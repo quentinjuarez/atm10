@@ -31,9 +31,9 @@
 --     far away or in another dimension (unlimited range, no cable needed
 --     either way: wireless/ender modems talk over the air, not cable)
 --
--- CHANNEL below must match CHANNEL in ../dashboard/run.lua and
--- ../energy-detector-broadcaster/run.lua exactly. Both broadcast types
--- share one channel; the dashboard tells them apart by payload `kind`.
+-- CHANNEL below must match CELL_CHANNEL in ../dashboard/run.lua exactly.
+-- Each broadcast type has its own channel now (see this folder's README
+-- ADR) -- ../energy-detector-broadcaster/run.lua uses a different one.
 --
 -- Only problems get logged (read failures, crashes, guard warnings below)
 -- -- not every routine transmit, which would just be noise once you've
@@ -46,7 +46,7 @@
 -- Powah's NBT ever changes shape -- it should never trigger reading raw
 -- NBT longs, but "should never" isn't "can't."
 
-local CHANNEL = 6060
+local CHANNEL = 6701
 local KIND = "ender_cell"
 local INTERVAL_SECONDS = 1
 local LOG_FILE = "ender-cell-broadcast.log"

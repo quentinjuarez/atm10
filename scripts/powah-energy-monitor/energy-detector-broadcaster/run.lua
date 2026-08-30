@@ -37,16 +37,16 @@
 -- block), reachable from this computer directly or over a wired network.
 -- Plus a modem (Wireless or Ender) on any free side to broadcast with.
 --
--- CHANNEL below must match CHANNEL in ../dashboard/run.lua and
--- ../ender-cell-broadcaster/run.lua exactly. Both broadcast types share
--- one channel; the dashboard tells them apart by payload `kind`.
+-- CHANNEL below must match FLOW_CHANNEL in ../dashboard/run.lua exactly.
+-- Each broadcast type has its own channel now (see this folder's README
+-- ADR) -- ../ender-cell-broadcaster/run.lua uses a different one.
 --
 -- Only problems get logged (crashes, source-list/flow-state changes) --
 -- not every routine transmit. Logs are printed AND appended to LOG_FILE,
 -- so you can check what happened after the fact even without watching
 -- the screen -- e.g. run `edit energy-detector-broadcast.log` in the shell.
 
-local CHANNEL = 6060
+local CHANNEL = 6702
 local KIND = "energy_flow"
 local SAMPLE_INTERVAL_SECONDS = 0.05 -- ~1 game tick, CC:Tweaked's own timer resolution
 local BROADCAST_INTERVAL_SECONDS = 1

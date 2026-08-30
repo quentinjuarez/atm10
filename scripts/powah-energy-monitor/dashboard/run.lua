@@ -1,14 +1,13 @@
 -- powah-energy-monitor/dashboard/run.lua
 --
--- Energy dashboard that RECEIVES two independent broadcast types over one
--- modem channel and renders both on a monitor:
---   kind="ender_cell"   from ../ender-cell-broadcaster/run.lua -- stored
---                        energy, capacity, fill % (no rate shown here --
---                        the flow graph below is the consumption signal)
---   kind="energy_flow"  from ../energy-detector-broadcaster/run.lua --
---                        total FE/t flow, a per-source breakdown, a
---                        rolling ~60s bar graph, and the current hour's
---                        min/max flow
+-- Energy dashboard that RECEIVES two independent broadcast types, one per
+-- channel, and renders both on a monitor:
+--   CELL_CHANNEL   kind="ender_cell"  from ../ender-cell-broadcaster/run.lua
+--                  -- stored energy, capacity, fill % (no rate shown here,
+--                  -- the flow graph below is the consumption signal)
+--   FLOW_CHANNEL   kind="energy_flow" from ../energy-detector-broadcaster/run.lua
+--                  -- total FE/t flow, a per-source breakdown, a rolling
+--                  -- ~60s bar graph, and the current hour's min/max flow
 --
 -- These are two separate broadcaster computers/scripts (see this folder's
 -- README.md and ../README.md for why), so each stream is tracked with
@@ -23,8 +22,8 @@
 -- display). See this folder's README.md for wiring and the decisions
 -- behind this design.
 --
--- CHANNEL below must match CHANNEL in both broadcaster run.lua files
--- exactly.
+-- CELL_CHANNEL/FLOW_CHANNEL below must match CHANNEL in the matching
+-- broadcaster's run.lua exactly.
 --
 -- Only problems get logged (guard warnings below, "no signal", crashes)
 -- -- not every routine reception, which would just be noise once you've
@@ -40,8 +39,16 @@
 -- other "this number doesn't make sense" cases -- instead of trusting
 -- every number the ender-cell-broadcaster hands back. When the guard is
 -- up, the fill % shown is a floor -- the real value is at least that.
+--
+-- PERFORMANCE: redraws happen ONLY on the REDRAW_SECONDS timer, never
+-- directly on message receipt -- a message just updates state, the next
+-- timer tick picks it up (at most REDRAW_SECONDS late). drawGraph() below
+-- batches each row into same-color runs instead of one monitor call per
+-- character cell -- see this folder's README.md ADR for both, with the
+-- reasoning and the actual call-count difference.
 
-local CHANNEL = 6060
+local CELL_CHANNEL = 6701
+local FLOW_CHANNEL = 6702
 local STALE_AFTER_SECONDS = 5 -- no signal warning if nothing received this long
 local REDRAW_SECONDS = 1
 local LOG_FILE = "dashboard.log"
@@ -145,31 +152,53 @@ local function drawBar(x, y, width, height, pct, color)
 end
 
 -- Rolling bar-chart of `history` ({t=, value=}, oldest first), newest
--- sample at the rightmost column, scaled between minV/maxV. One column
--- per pixel of width; a flat (or not-yet-established) range just draws
--- every bar at half height rather than dividing by zero.
+-- sample at the rightmost column, scaled between minV/maxV. Column
+-- heights/colors are precomputed once (pure Lua, no peripheral calls),
+-- then each row is drawn as same-color RUNS -- one setCursorPos +
+-- setBackgroundColor + write per contiguous run, not per cell. A row
+-- near the top of a typical bar chart is mostly one long "empty" run,
+-- so this is usually far fewer monitor calls than width*height; see
+-- this folder's README.md ADR for the actual difference.
 local function drawGraph(x, yTop, width, height, history, minV, maxV)
   local n = #history
   local range = maxV - minV
-  for col = 0, width - 1 do
-    local idx = n - width + 1 + col
-    local barHeight = 0
-    local color = colors.gray
+
+  local barHeights, colColors = {}, {}
+  for col = 1, width do
+    local idx = n - width + col
     if idx >= 1 and idx <= n then
       local v = history[idx].value
-      color = flowColor(v)
+      colColors[col] = flowColor(v)
+      local barH
       if range > 0 then
-        barHeight = math.floor((v - minV) / range * height + 0.5)
+        barH = math.floor((v - minV) / range * height + 0.5)
       else
-        barHeight = math.floor(height / 2)
+        barH = math.floor(height / 2)
       end
-      barHeight = math.max(0, math.min(height, barHeight))
+      barHeights[col] = math.max(0, math.min(height, barH))
+    else
+      colColors[col] = colors.black
+      barHeights[col] = 0
     end
-    for row = 0, height - 1 do
-      local fromBottom = height - 1 - row
-      monitor.setCursorPos(x + col, yTop + row)
-      monitor.setBackgroundColor(fromBottom < barHeight and color or colors.black)
-      monitor.write(" ")
+  end
+
+  for row = 0, height - 1 do
+    local fromBottom = height - 1 - row
+    local y = yTop + row
+    local runStart, runColor = 1, nil
+    for col = 1, width + 1 do
+      local cellColor = nil
+      if col <= width then
+        cellColor = (fromBottom < barHeights[col]) and colColors[col] or colors.black
+      end
+      if cellColor ~= runColor then
+        if runColor then
+          monitor.setCursorPos(x + runStart - 1, y)
+          monitor.setBackgroundColor(runColor)
+          monitor.write(string.rep(" ", col - runStart))
+        end
+        runStart, runColor = col, cellColor
+      end
     end
   end
   monitor.setBackgroundColor(colors.black)
@@ -209,9 +238,9 @@ local function render()
   row = writeLine(row, "POWAH Energy Monitor")
   row = row + 1 -- blank
 
-  -- ---- Storage level (kind="ender_cell") -----------------------------
+  -- ---- Storage level (CELL_CHANNEL, kind="ender_cell") ---------------
   if not lastCell then
-    row = writeLine(row, ("Waiting for cell signal (ch. %d)..."):format(CHANNEL), colors.gray)
+    row = writeLine(row, ("Waiting for cell signal (ch. %d)..."):format(CELL_CHANNEL), colors.gray)
     row = row + 1
   else
     local energy, maxEnergy = lastCell.energy, lastCell.maxEnergy
@@ -238,9 +267,9 @@ local function render()
 
   row = row + 1 -- blank between the two sections
 
-  -- ---- Flow (kind="energy_flow") -------------------------------------
+  -- ---- Flow (FLOW_CHANNEL, kind="energy_flow") ------------------------
   if not lastFlow then
-    row = writeLine(row, ("Waiting for flow signal (ch. %d)..."):format(CHANNEL), colors.gray)
+    row = writeLine(row, ("Waiting for flow signal (ch. %d)..."):format(FLOW_CHANNEL), colors.gray)
     row = row + 1
   else
     -- Checked in this order because totalFlowFEt is always a number (0
@@ -315,14 +344,17 @@ local ok, err = pcall(function()
   end
 
   local modem = requirePeripheral("modem", "receiver for both broadcast types")
-  if not modem.isOpen(CHANNEL) then
-    modem.open(CHANNEL)
+  if not modem.isOpen(CELL_CHANNEL) then
+    modem.open(CELL_CHANNEL)
+  end
+  if not modem.isOpen(FLOW_CHANNEL) then
+    modem.open(FLOW_CHANNEL)
   end
 
   monitor = requirePeripheral("monitor", "output display")
   monitor.setTextScale(TEXT_SCALE)
 
-  log("READY listening on ch.%d", CHANNEL)
+  log("READY listening on ch.%d (cell) and ch.%d (flow)", CELL_CHANNEL, FLOW_CHANNEL)
   safeRender()
 
   local lastAnomaly = nil
@@ -330,8 +362,12 @@ local ok, err = pcall(function()
   while true do
     local event, sideOrTimerId, channel, replyChannel, message = os.pullEvent()
 
-    if event == "modem_message" and channel == CHANNEL and type(message) == "table" then
-      if message.kind == "ender_cell"
+    if event == "modem_message" and type(message) == "table" then
+      -- State only here, no safeRender() -- the redrawTimer below is the
+      -- only thing that draws, so a burst of messages costs one redraw
+      -- per REDRAW_SECONDS, not one per message. See the PERFORMANCE
+      -- note at the top of this file.
+      if channel == CELL_CHANNEL and message.kind == "ender_cell"
         and type(message.energy) == "number" and type(message.maxEnergy) == "number" then
         lastCell = message
         lastCellReceivedAt = os.epoch("utc")
@@ -345,9 +381,7 @@ local ok, err = pcall(function()
           end
           lastAnomaly = anomaly
         end
-
-        safeRender()
-      elseif message.kind == "energy_flow" then
+      elseif channel == FLOW_CHANNEL and message.kind == "energy_flow" then
         lastFlow = message
         lastFlowReceivedAt = os.epoch("utc")
 
@@ -367,8 +401,6 @@ local ok, err = pcall(function()
             hourMax = math.max(hourMax, message.totalFlowFEt)
           end
         end
-
-        safeRender()
       end
     elseif event == "timer" and sideOrTimerId == redrawTimer then
       safeRender()
