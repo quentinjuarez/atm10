@@ -21,6 +21,17 @@
 -- computer doesn't need a Block Reader or an Ender Cell at all -- it
 -- only needs Energy Detectors somewhere on its network.
 --
+-- WHY SAMPLE EVERY TICK INSTEAD OF ONCE PER BROADCAST: getTransferRate()
+-- returns the INSTANTANEOUS flow at the exact tick it's called, not an
+-- average -- calling it once per second (once every ~20 ticks) means
+-- catching whatever that one arbitrary tick happened to be. If Powah
+-- pushes energy in bursts rather than a perfectly smooth stream, a
+-- single-tick sample can land on a near-zero gap or a brief spike,
+-- nowhere near the true sustained rate (this is what "reads 0, then
+-- 700, but real production is 50k" looked like). Sampling every tick and
+-- broadcasting the 1-second AVERAGE smooths that out. See this folder's
+-- README.md ADR for the reasoning and a performance note.
+--
 -- WIRING: place an Advanced Peripherals Energy Detector inline on each
 -- energy source's output cable (the cable passes THROUGH the detector
 -- block), reachable from this computer directly or over a wired network.
@@ -37,7 +48,8 @@
 
 local CHANNEL = 6060
 local KIND = "energy_flow"
-local INTERVAL_SECONDS = 1
+local SAMPLE_INTERVAL_SECONDS = 0.05 -- ~1 game tick, CC:Tweaked's own timer resolution
+local BROADCAST_INTERVAL_SECONDS = 1
 local LOG_FILE = "energy-detector-broadcast.log"
 local LOG_MAX_LINES = 50
 local DETECTOR_TYPE = "energy_detector" -- "energyDetector" pre-1.21.1
@@ -90,58 +102,86 @@ local ok, err = pcall(function()
     return names
   end
 
-  local detectorNames = findDetectorNames()
-  log("Energy Detectors (%s) found: %d (%s)", DETECTOR_TYPE, #detectorNames,
-    #detectorNames > 0 and table.concat(detectorNames, ", ") or "none yet")
-
-  -- Reads every detector's flow, skipping (not erroring on) one that
-  -- fails or disappears mid-run -- re-lists names each cycle so a newly
-  -- placed detector shows up without restarting this script.
-  local function readSources()
+  -- Re-wraps the detector set. Called once per BROADCAST cycle (1/s),
+  -- not once per sample (20/s) -- peripheral.getNames() walks the whole
+  -- network's peripheral list, which is worth doing once a second, not
+  -- every tick. Already-known detectors keep their wrapped reference
+  -- instead of re-wrapping for no reason.
+  local knownDetectors = {} -- [name] = wrapped peripheral
+  local function refreshDetectors()
     local names = findDetectorNames()
-    local sources = {}
-    local total = 0
+    local refreshed = {}
     for _, name in ipairs(names) do
-      local d = peripheral.wrap(name)
-      local readOk, rate = pcall(d.getTransferRate)
-      if readOk and type(rate) == "number" then
-        table.insert(sources, { name = name, rateFEt = rate })
-        total = total + rate
-      end
+      refreshed[name] = knownDetectors[name] or peripheral.wrap(name)
     end
-    return sources, total
+    knownDetectors = refreshed
+    return names
   end
 
-  log("READY broadcasting kind=%s on ch.%d every %ds", KIND, CHANNEL, INTERVAL_SECONDS)
+  local detectorNames = refreshDetectors()
+  log("Energy Detectors (%s) found: %d (%s)", DETECTOR_TYPE, #detectorNames,
+    #detectorNames > 0 and table.concat(detectorNames, ", ") or "none yet")
+  log("READY broadcasting kind=%s on ch.%d, sampling every tick, averaging over %ds",
+    KIND, CHANNEL, BROADCAST_INTERVAL_SECONDS)
 
   local lastDetectorNames = table.concat(detectorNames, ",")
   local lastActive = nil -- nil = unknown yet, else true/false on total flow ~= 0
 
+  -- Per-detector running sum/count for the current broadcast window.
+  local sampleSum, sampleCount = {}, {}
+
+  local sampleTimer = os.startTimer(SAMPLE_INTERVAL_SECONDS)
+  local broadcastTimer = os.startTimer(BROADCAST_INTERVAL_SECONDS)
+
   while true do
-    local sources, totalFlowFEt = readSources()
+    local event, id = os.pullEvent("timer")
 
-    local currentDetectorNames = {}
-    for _, s in ipairs(sources) do table.insert(currentDetectorNames, s.name) end
-    local joined = table.concat(currentDetectorNames, ",")
-    if joined ~= lastDetectorNames then
-      log("Energy Detectors changed: now %d (%s)", #sources, joined ~= "" and joined or "none")
-      lastDetectorNames = joined
+    if id == sampleTimer then
+      for name, d in pairs(knownDetectors) do
+        local readOk, rate = pcall(d.getTransferRate)
+        if readOk and type(rate) == "number" then
+          sampleSum[name] = (sampleSum[name] or 0) + rate
+          sampleCount[name] = (sampleCount[name] or 0) + 1
+        end
+      end
+      sampleTimer = os.startTimer(SAMPLE_INTERVAL_SECONDS)
+
+    elseif id == broadcastTimer then
+      local names = refreshDetectors()
+
+      local joined = table.concat(names, ",")
+      if joined ~= lastDetectorNames then
+        log("Energy Detectors changed: now %d (%s)", #names, joined ~= "" and joined or "none")
+        lastDetectorNames = joined
+      end
+
+      local sources, totalFlowFEt = {}, 0
+      for _, name in ipairs(names) do
+        local count = sampleCount[name] or 0
+        -- A detector with zero ticks sampled this window (just placed,
+        -- or every read failed) reports 0 rather than being omitted, so
+        -- it still shows up in `sources`.
+        local avg = count > 0 and (sampleSum[name] / count) or 0
+        table.insert(sources, { name = name, rateFEt = avg })
+        totalFlowFEt = totalFlowFEt + avg
+      end
+
+      local active = totalFlowFEt ~= 0
+      if active ~= lastActive then
+        log("Total flow: %s (%.0f FE/t avg)", active and "ACTIVE" or "IDLE", totalFlowFEt)
+        lastActive = active
+      end
+
+      modem.transmit(CHANNEL, CHANNEL, {
+        kind = KIND,
+        t = os.epoch("utc"),
+        sources = sources,
+        totalFlowFEt = totalFlowFEt,
+      })
+
+      sampleSum, sampleCount = {}, {}
+      broadcastTimer = os.startTimer(BROADCAST_INTERVAL_SECONDS)
     end
-
-    local active = totalFlowFEt ~= 0
-    if active ~= lastActive then
-      log("Total flow: %s (%.0f FE/t)", active and "ACTIVE" or "IDLE", totalFlowFEt)
-      lastActive = active
-    end
-
-    modem.transmit(CHANNEL, CHANNEL, {
-      kind = KIND,
-      t = os.epoch("utc"),
-      sources = sources,
-      totalFlowFEt = totalFlowFEt,
-    })
-
-    os.sleep(INTERVAL_SECONDS)
   end
 end)
 

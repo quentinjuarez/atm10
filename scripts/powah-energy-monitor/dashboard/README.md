@@ -21,7 +21,7 @@ Then `reboot` to activate `startup.lua`. To test a change without rebooting: `wg
 
 **Context.** `../ender-cell-broadcaster/` and `../energy-detector-broadcaster/` are two separate computers that can crash, lose power, or go out of modem range independently of each other. An earlier version tracked one merged `last` payload from a single combined broadcaster — that stopped working once storage level and flow became genuinely separate broadcasts.
 
-**Decision.** `lastCell`/`previousCell`/`lastCellReceivedAt` track the most recent `kind="ender_cell"` message; `lastFlow`/`lastFlowReceivedAt` track the most recent `kind="energy_flow"` message, completely separately. The main loop's `modem_message` handler branches on `message.kind` before touching either track. `render()` draws both sections independently, each with its own "Waiting for signal" (before the first message of that kind ever arrives) and "NO SIGNAL (cell|flow, Ns ago)" (once one goes stale) — never a single combined status for both.
+**Decision.** `lastCell`/`lastCellReceivedAt` track the most recent `kind="ender_cell"` message; `lastFlow`/`lastFlowReceivedAt` track the most recent `kind="energy_flow"` message, completely separately. The main loop's `modem_message` handler branches on `message.kind` before touching either track. `render()` draws both sections independently, each with its own "Waiting for signal" (before the first message of that kind ever arrives) and "NO SIGNAL (cell|flow, Ns ago)" (once one goes stale) — never a single combined status for both.
 
 **Consequences.** Losing the Ender Cell broadcaster doesn't blank the flow numbers, and vice versa — you can tell exactly which of the two computers needs attention from the dashboard alone, without checking either broadcaster's own log. Costs two of everything (two "received at" timestamps, two stale checks) instead of one, but that's the point.
 
@@ -41,23 +41,25 @@ Then `reboot` to activate `startup.lua`. To test a change without rebooting: `wg
 
 **Consequences.** The graph and hour min/max reset on every dashboard reboot (no on-disk persistence) — acceptable for "current hour" framing, but a reboot mid-hour loses that hour's earlier extremes. Graph width is whatever the monitor provides; a monitor narrower than ~60 columns shows fewer than 60 seconds of history rather than compressing samples, so the visible window shrinks with a smaller build instead of the graph misleadingly rescaling.
 
-## ADR: rate calculated from the broadcaster's timestamps, not receipt time
+## ADR: no rate/consumption number derived from the cell stream — the flow graph is the one signal for that
 
-**Decision.** Each `kind="ender_cell"` payload carries `t = os.epoch("utc")` set by that broadcaster at read time; the level-based FE/s is computed from consecutive `t`/`energy` pairs, not from when this computer happened to receive them.
+**Context.** An earlier version also computed a level-based "FE/s" from consecutive `kind="ender_cell"` readings. It was never a good signal (see `../README.md`'s "why level alone can't show consumption") and duplicated what the flow graph already shows properly — two numbers claiming to answer the same question, one of them near-meaningless, was more confusing than having one.
 
-**Consequences.** Immune to receive-side jitter (event queue delay, redraw timing). Requires the broadcaster and dashboard clocks to agree, which `os.epoch("utc")` guarantees since it's wall-clock, not per-computer uptime.
+**Decision.** Dropped entirely — no rate computation, no FE/s display, anywhere in this file. `lastCell` is used only for stored/capacity/fill % and the clamp guard; consumption/production is `lastFlow`'s job alone, shown as `Total: X FE/t` and the graph.
+
+**Consequences.** One fewer thing to read on screen, and no risk of the two numbers disagreeing or confusing which one to trust.
 
 ## ADR: `detectAnomaly()` guard, kept even though the clamp bug is fixed upstream
 
-**Context.** Before the Ender Cell broadcaster switched to Block Reader NBT (see `../ender-cell-broadcaster/README.md`), a clamped reading was silently wrong and, worse, made the FE/s math show a false `0 FE/s` (a clamped value never changes, so the delta between two clamped readings is always zero — indistinguishable from genuinely idle).
+**Context.** Before the Ender Cell broadcaster switched to Block Reader NBT (see `../ender-cell-broadcaster/README.md`), a clamped reading was silently wrong.
 
-**Decision.** `detectAnomaly()` flags NaN, negative values, `energy > maxEnergy`, and the exact clamp signature (`energy == 2147483647` while `maxEnergy` is larger). When triggered, the dashboard shows a `%+ (min)` floor instead of a false precise percentage, and hides FE/s instead of a fake `0 FE/s`, with `GUARD: <reason>` on screen. It only applies to the cell stream — flow data from Energy Detectors isn't known to have an equivalent clamp issue.
+**Decision.** `detectAnomaly()` flags NaN, negative values, `energy > maxEnergy`, and the exact clamp signature (`energy == 2147483647` while `maxEnergy` is larger). When triggered, the dashboard shows a `%+ (min)` floor instead of a false precise percentage, with `GUARD: <reason>` on screen. It only applies to the cell stream — flow data from Energy Detectors isn't known to have an equivalent clamp issue.
 
 **Consequences.** Should never fire now that the Ender Cell broadcaster reads raw NBT — kept anyway as defense in depth, in case Powah's data ever changes shape again. Costs nothing to leave in.
 
 ## ADR: every `render()` call wrapped in its own `pcall`
 
-**Context.** An earlier version formatted a fractional FE/s value with `%d`, which CC:Tweaked's Lua runtime rejects for non-integral floats — that crashed the *entire* main loop the first time a rate was computed, freezing the monitor on a stale frame with no further updates or way to tell why.
+**Context.** An earlier version formatted a fractional rate value with `%d`, which CC:Tweaked's Lua runtime rejects for non-integral floats — that crashed the *entire* main loop the first time it happened, freezing the monitor on a stale frame with no further updates or way to tell why. The flow broadcaster's FE/t values are per-tick averages now (see `../energy-detector-broadcaster/README.md`), so `formatFE()` still routinely handles fractional numbers — the `pcall` stays as insurance regardless.
 
 **Decision.** `safeRender()` wraps every `render()` call in its own `pcall`; a failure there logs `RENDER ERROR: ...` and the listening loop keeps running instead of dying.
 

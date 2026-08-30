@@ -39,9 +39,19 @@ Then `reboot` to activate `startup.lua`. To test a change without rebooting: `wg
 
 Same reasoning as `../ender-cell-broadcaster/README.md` — matches that broadcaster's cadence so both streams feel equally live, and only real changes get logged (the set of detected detector names changing, or total flow crossing zero) instead of routine successful sends, keeping `energy-detector-broadcast.log` small and worth reading.
 
+## ADR: sample every tick, broadcast the 1-second average
+
+**Context.** `getTransferRate()` returns the *instantaneous* flow at the exact tick it's called, not an average. The first version called it once per broadcast (once every ~20 ticks) — if Powah pushes energy in bursts rather than a smooth stream, a single-tick sample can land on a near-zero gap or a brief spike, nowhere near the true sustained rate. In this world that looked like reading `0` or `700` FE/t while real production was at least `50k`.
+
+**Decision.** `os.startTimer(SAMPLE_INTERVAL_SECONDS)` (`0.05`s, CC:Tweaked's own timer resolution — one game tick) drives a second, faster loop that calls `getTransferRate()` on every known detector and accumulates a running sum/count per detector. The existing 1-second `broadcastTimer` now computes `sum / count` (the window's average) per detector before transmitting, then resets the accumulators. `refreshDetectors()` (the `peripheral.getNames()` network scan) still only runs once per broadcast, not once per tick — the tick loop just calls `getTransferRate()` on the peripherals already known from the last scan.
+
+**Consequences — performance.** A single `getTransferRate()` call is a lightweight same-JVM peripheral RPC, not network I/O; calling it ~20×/s per detector is well within what a CC:Tweaked computer does routinely (mining/pathing turtles issue far more peripheral calls per tick than this). For a handful of detectors (the expected case) this is not a meaningful load on the computer or the server. It does scale linearly with detector *count* × 20/s, so if this ever grows to dozens of detectors on one computer, that's worth revisiting (e.g. a longer `SAMPLE_INTERVAL_SECONDS`) — not a concern at the scale this was built for.
+
+**Consequences — accuracy.** A window average is much closer to true sustained throughput than one arbitrary sample, but it's still an average over whatever ticks actually got sampled (CC:Tweaked's timer isn't guaranteed to fire on literally every server tick under load) — expect it to land close to real production, not necessarily bit-exact.
+
 ## Troubleshooting: reading is 0 or far lower than the real production/consumption
 
-`getTransferRate()` reports whatever actually passed through *that specific block* — it isn't a network-wide total, so a low or zero reading usually means the detector isn't sitting where all the power is. In rough order of likelihood:
+`getTransferRate()` reports whatever actually passed through *that specific block* — it isn't a network-wide total, so a low or zero reading usually means the detector isn't sitting where all the power is. `run.lua` now broadcasts a 1-second average of per-tick samples rather than one instantaneous read (see the ADR above), which rules out simple under-sampling as the cause — if the average is still far off, it's one of these:
 
 1. **Parallel paths around the detector.** If the source is connected to the network through more than one cable run, most of the power can take the path that *doesn't* go through the detector, and it only sees whatever trickles through its own segment. Check that the detector's segment is the *only* connection between source and network — no direct source-to-network cable or block-to-block adjacency bypassing it.
 2. **Rate limit set lower than real flow.** Advanced Peripherals documents the Energy Detector as able to "act as a resistor" via `setTransferRateLimit()`, capping throughput to whatever limit is set — which would show up exactly as "flow reads low/capped" while genuinely throttling the real power line, not just misreporting it. The default value isn't documented publicly. Check it directly from any computer's Lua console (the `lua` program, not `run.lua`):

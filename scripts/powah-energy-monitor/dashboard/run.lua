@@ -3,7 +3,8 @@
 -- Energy dashboard that RECEIVES two independent broadcast types over one
 -- modem channel and renders both on a monitor:
 --   kind="ender_cell"   from ../ender-cell-broadcaster/run.lua -- stored
---                        energy, capacity, fill %, a level-based FE/s rate
+--                        energy, capacity, fill % (no rate shown here --
+--                        the flow graph below is the consumption signal)
 --   kind="energy_flow"  from ../energy-detector-broadcaster/run.lua --
 --                        total FE/t flow, a per-source breakdown, a
 --                        rolling ~60s bar graph, and the current hour's
@@ -38,8 +39,7 @@
 -- than what's reported), so detectAnomaly() below flags it -- and a few
 -- other "this number doesn't make sense" cases -- instead of trusting
 -- every number the ender-cell-broadcaster hands back. When the guard is
--- up, the fill % is a floor (actual is at least that), and FE/s is
--- hidden rather than shown as a false "0 FE/s".
+-- up, the fill % shown is a floor -- the real value is at least that.
 
 local CHANNEL = 6060
 local STALE_AFTER_SECONDS = 5 -- no signal warning if nothing received this long
@@ -102,8 +102,9 @@ local function formatFE(n)
   if n >= 1e9 then return string.format("%s%.2fB FE", sign, n / 1e9) end
   if n >= 1e6 then return string.format("%s%.2fM FE", sign, n / 1e6) end
   if n >= 1e3 then return string.format("%s%.2fK FE", sign, n / 1e3) end
-  -- n can be a fractional rate (e.g. an FE/s division result); CC:Tweaked's
-  -- Lua runtime errors on %d with a non-integral float, so round explicitly.
+  -- n can be fractional -- the broadcaster's FE/t values are per-tick
+  -- averages (sum/count), not whole numbers. CC:Tweaked's Lua runtime
+  -- errors on %d with a non-integral float, so round explicitly.
   return string.format("%s%d FE", sign, math.floor(n + 0.5))
 end
 
@@ -179,7 +180,6 @@ end
 -- ---------------------------------------------------------------------
 
 local lastCell = nil           -- most recent kind="ender_cell" payload
-local previousCell = nil       -- the one before that, for rate calc
 local lastCellReceivedAt = nil -- os.epoch("utc") of last kind="ender_cell"
 
 local lastFlow = nil           -- most recent kind="energy_flow" payload
@@ -218,31 +218,13 @@ local function render()
     local anomaly = detectAnomaly(energy, maxEnergy)
     local pct = maxEnergy > 0 and (energy / maxEnergy * 100) or 0
 
-    -- Level-based rate: near-useless once the network sits pinned near
-    -- 100% (a well-tuned power source keeps it there on purpose), but
-    -- harmless to keep as a secondary number -- Total/graph below are
-    -- the actual production/consumption signal for that situation.
-    local ratePerSec = nil
-    local rateUnavailableReason = "warming up"
-    if anomaly then
-      rateUnavailableReason = "guard triggered"
-    elseif previousCell and lastCell.t > previousCell.t and not detectAnomaly(previousCell.energy, previousCell.maxEnergy) then
-      ratePerSec = (lastCell.energy - previousCell.energy) / ((lastCell.t - previousCell.t) / 1000)
-    end
-
     row = writeLine(row, formatFE(energy) .. " / " .. formatFE(maxEnergy))
     row = writeLine(row, anomaly and string.format("%.1f%%+ (min)", pct) or string.format("%.1f%%", pct))
     row = row + 1 -- blank
 
     local barWidth = math.max(w - 2, 10)
     drawBar(1, row, barWidth, 2, pct, barColor(pct))
-    row = row + 3 -- 2 bar rows + blank
-
-    if ratePerSec then
-      row = writeLine(row, string.format("%s/s", formatFE(ratePerSec)), ratePerSec >= 0 and colors.lime or colors.orange)
-    else
-      row = writeLine(row, ("-- FE/s (%s)"):format(rateUnavailableReason), colors.gray)
-    end
+    row = row + 2 -- bar rows
 
     if anomaly then
       row = writeLine(row, "GUARD: " .. anomaly, colors.red)
@@ -347,7 +329,6 @@ local ok, err = pcall(function()
     if event == "modem_message" and channel == CHANNEL and type(message) == "table" then
       if message.kind == "ender_cell"
         and type(message.energy) == "number" and type(message.maxEnergy) == "number" then
-        previousCell = lastCell
         lastCell = message
         lastCellReceivedAt = os.epoch("utc")
 
