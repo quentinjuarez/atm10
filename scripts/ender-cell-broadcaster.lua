@@ -13,49 +13,74 @@
 --
 -- CHANNEL below must match CHANNEL in powah-ender-cell-dashboard.lua
 -- exactly, or the dashboard will never see a message.
+--
+-- Every transmit (and any crash) is printed AND appended to LOG_FILE, so
+-- you can check what happened after the fact even without watching the
+-- screen -- e.g. run `edit broadcast.log` in the shell.
 
 local CHANNEL = 6060
 local ENDER_CELL_SIDE = "top"
 local INTERVAL_SECONDS = 1
+local LOG_FILE = "broadcast.log"
+local LOG_MAX_LINES = 50
 
 -- ---------------------------------------------------------------------
--- Peripheral checks -- fail loudly before the loop starts, per block.
+-- Logging: prints live and keeps a bounded on-disk history. Oldest
+-- lines drop off past LOG_MAX_LINES so this can run forever without
+-- slowly filling the computer's disk space.
 -- ---------------------------------------------------------------------
 
-local cell = peripheral.wrap(ENDER_CELL_SIDE)
-if not cell then
-  error(("no peripheral on side '%s' -- is the Ender Cell placed there?"):format(ENDER_CELL_SIDE), 0)
-end
+local logLines = {}
 
-local cellType = peripheral.getType(ENDER_CELL_SIDE)
-if cellType ~= "ender_cell" then
-  error(("peripheral on '%s' is a '%s', not an 'ender_cell' -- check placement, and that Advanced Peripherals is installed"):format(ENDER_CELL_SIDE, tostring(cellType)), 0)
+local function log(fmt, ...)
+  local line = ("[%s] " .. fmt):format(os.date("%H:%M:%S"), ...)
+  print(line)
+  table.insert(logLines, line)
+  if #logLines > LOG_MAX_LINES then
+    table.remove(logLines, 1)
+  end
+  local f = fs.open(LOG_FILE, "w")
+  if f then
+    f.write(table.concat(logLines, "\n"))
+    f.close()
+  end
 end
-
-if type(cell.getEnergy) ~= "function" or type(cell.getMaxEnergy) ~= "function" then
-  error("ender_cell peripheral is missing getEnergy()/getMaxEnergy() -- wrong Advanced Peripherals version?", 0)
-end
-
-local modem = peripheral.find("modem")
-if not modem then
-  error("no modem peripheral found -- attach a Wireless or Ender Modem to this computer", 0)
-end
-
-local okProbe, probeEnergy, probeMax = pcall(function()
-  return cell.getEnergy(), cell.getMaxEnergy()
-end)
-if not okProbe or type(probeEnergy) ~= "number" or type(probeMax) ~= "number" then
-  error("ender_cell did not return usable numbers from getEnergy()/getMaxEnergy() -- got: " .. tostring(probeEnergy), 0)
-end
-
-print(("OK -- cell reports %d / %d FE"):format(probeEnergy, probeMax))
-print(("Broadcasting on channel %d every %ds..."):format(CHANNEL, INTERVAL_SECONDS))
 
 -- ---------------------------------------------------------------------
--- Broadcast loop
+-- Everything below runs inside one pcall so ANY failure -- a missing
+-- peripheral included -- gets logged to file, not just flashed on a
+-- screen nobody's watching after an unattended reboot.
 -- ---------------------------------------------------------------------
 
 local ok, err = pcall(function()
+  local cell = peripheral.wrap(ENDER_CELL_SIDE)
+  if not cell then
+    error(("no peripheral on side '%s' -- is the Ender Cell placed there?"):format(ENDER_CELL_SIDE), 0)
+  end
+
+  local cellType = peripheral.getType(ENDER_CELL_SIDE)
+  if cellType ~= "ender_cell" then
+    error(("peripheral on '%s' is a '%s', not an 'ender_cell' -- check placement, and that Advanced Peripherals is installed"):format(ENDER_CELL_SIDE, tostring(cellType)), 0)
+  end
+
+  if type(cell.getEnergy) ~= "function" or type(cell.getMaxEnergy) ~= "function" then
+    error("ender_cell peripheral is missing getEnergy()/getMaxEnergy() -- wrong Advanced Peripherals version?", 0)
+  end
+
+  local modem = peripheral.find("modem")
+  if not modem then
+    error("no modem peripheral found -- attach a Wireless or Ender Modem to this computer", 0)
+  end
+
+  local probeOk, probeEnergy, probeMax = pcall(function()
+    return cell.getEnergy(), cell.getMaxEnergy()
+  end)
+  if not probeOk or type(probeEnergy) ~= "number" or type(probeMax) ~= "number" then
+    error("ender_cell did not return usable numbers from getEnergy()/getMaxEnergy() -- got: " .. tostring(probeEnergy), 0)
+  end
+
+  log("READY cell=%d/%d FE, broadcasting on ch.%d every %ds", probeEnergy, probeMax, CHANNEL, INTERVAL_SECONDS)
+
   while true do
     local readOk, energy, maxEnergy = pcall(function()
       return cell.getEnergy(), cell.getMaxEnergy()
@@ -67,8 +92,9 @@ local ok, err = pcall(function()
         energy = energy,
         maxEnergy = maxEnergy,
       })
+      log("TX %d/%d FE", energy, maxEnergy)
     else
-      print("Read failed, skipping this cycle: " .. tostring(energy))
+      log("READ FAILED: %s", tostring(energy))
     end
 
     os.sleep(INTERVAL_SECONDS)
@@ -76,5 +102,5 @@ local ok, err = pcall(function()
 end)
 
 if not ok then
-  print("Crashed: " .. tostring(err))
+  log("CRASHED: %s", tostring(err))
 end

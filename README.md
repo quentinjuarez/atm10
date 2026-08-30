@@ -25,6 +25,8 @@ Pastebin's public API has no "edit an existing paste" endpoint — only create (
 | [`scripts/monitor-dashboard.lua`](./scripts/monitor-dashboard.lua) | Template | Listens for a broadcast and renders it on a monitor |
 | [`scripts/ender-cell-broadcaster.lua`](./scripts/ender-cell-broadcaster.lua) | Ready to use | Reads a POWAH Ender Cell directly above the computer, broadcasts stored/max energy over a modem on a fixed channel |
 | [`scripts/powah-ender-cell-dashboard.lua`](./scripts/powah-ender-cell-dashboard.lua) | Ready to use | Receives that broadcast and renders it on a monitor: stored/capacity, fill %, FE/s rate, "no signal" state if the broadcaster goes quiet |
+| [`scripts/startup-broadcaster.lua`](./scripts/startup-broadcaster.lua) | Install as `startup.lua` | Auto-runs `ender-cell-broadcaster.lua` fresh from GitHub on every boot of the broadcaster computer |
+| [`scripts/startup-dashboard.lua`](./scripts/startup-dashboard.lua) | Install as `startup.lua` | Auto-runs `powah-ender-cell-dashboard.lua` fresh from GitHub on every boot of the dashboard computer |
 
 Templates are meant to be copied and customized, not run as-is — each one lists what to check before use (peripheral side/name, exact API method names, protocol string). "Ready to use" scripts still discover their peripherals by type at startup and fail with a clear error if something expected isn't attached, rather than assuming a side/slot.
 
@@ -47,6 +49,34 @@ Neither computer needs to touch the other one — the only link between them is 
 **Monitor type.** An Advanced Monitor gives colored fill bars (green/yellow/red by charge level); a plain Monitor still works, just without color — the script checks `monitor.isColor()` and adapts automatically.
 
 **Monitor size.** The script sets `setTextScale(0.5)` and needs about 10 rows of text plus a bit of width for the bar. Per the [ComputerCraft resolution reference](https://www.computercraft.info/wiki/Resolution), at scale 0.5 a single monitor block gives roughly **15×10 characters** — technically enough, but with zero margin for anything added later. Build **1 block wide × 2 blocks tall** instead: monitor blocks placed edge-to-edge on the same plane merge into one screen automatically (no interaction needed), giving roughly 15×24 characters — comfortable headroom.
+
+### Logs
+
+Both `ender-cell-broadcaster.lua` and `powah-ender-cell-dashboard.lua` print every transmit/receive (and any crash) to the computer's own terminal live, and also keep the same lines in a small on-disk log — `broadcast.log` on the broadcaster, `dashboard.log` on the dashboard. The file is capped at the last 50 lines (rewritten in place each time, oldest line dropped first), so it can run for days at 1 message/sec without slowly eating the computer's disk space.
+
+To read a log after the fact — e.g. to see why a computer isn't broadcasting after you weren't watching it — open the computer's shell and run:
+
+```
+edit broadcast.log
+```
+
+(`edit` is CC:Tweaked's built-in file viewer/editor; there's no separate `cat`/`type` program in the stock ROM. Ctrl+E to exit without saving.)
+
+### Auto-boot
+
+CC:Tweaked runs a file named exactly `startup.lua` in a computer's root automatically on every boot/reboot — that's the entire mechanism, nothing to configure beyond having that file exist. [`startup-broadcaster.lua`](./scripts/startup-broadcaster.lua) and [`startup-dashboard.lua`](./scripts/startup-dashboard.lua) are meant to be installed *as* `startup.lua` on their respective computers; each one just does `wget run <url>` against the real script (with a few retries in case HTTP isn't up yet right after boot) — so the computer never runs a stale local copy, the same "always fetch from GitHub raw" reasoning as everywhere else in this README.
+
+One-time install per computer:
+
+```
+-- on the broadcaster computer
+wget https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/startup-broadcaster.lua startup.lua
+
+-- on the dashboard computer
+wget https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/startup-dashboard.lua startup.lua
+```
+
+After that, `reboot` (or a world/server restart) brings each computer back up already running the latest pushed version — no need to `wget run` by hand again unless you're actively testing changes.
 
 ## Reference doc
 
