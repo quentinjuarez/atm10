@@ -1,12 +1,25 @@
 -- ender-cell-broadcaster.lua
 --
--- Reads a POWAH Ender Cell placed directly ABOVE this computer and
--- broadcasts its energy reading over a modem on a fixed channel, for
--- powah-ender-cell-dashboard.lua to pick up and display elsewhere.
+-- Reads a POWAH Ender Cell via a Block Reader (Advanced Peripherals)
+-- facing it, and broadcasts the energy reading over a modem on a fixed
+-- channel, for powah-ender-cell-dashboard.lua to pick up elsewhere.
+--
+-- WHY BLOCK READER, NOT ender_cell.getEnergy(): Advanced Peripherals'
+-- dedicated ender_cell peripheral clamps getEnergy() to the 32-bit
+-- signed max (2147483647, ~2.15B) on cells/networks storing more than
+-- that -- see IntelligenceModding/AdvancedPeripherals#642. Block Reader
+-- instead returns the tile entity's raw NBT, which isn't limited to a
+-- 32-bit int, so it reports the true value. Confirmed in-world via
+-- debug-block-reader.lua on a powah:ender_cell_nitro -- the two fields
+-- read below (ENERGY_FIELD / CAPACITY_FIELD) are exactly what it dumped,
+-- not a guess. If a future Powah/AP update renames them, re-run
+-- debug-block-reader.lua and update the two constants below.
 --
 -- WIRING (see README "Wiring" section for the full picture):
---   - Ender Cell: directly on top of this computer -> peripheral side "top"
---   - Modem: any other free side of this computer -- Wireless Modem if the
+--   - Block Reader: placed FACING the Ender Cell (reads whatever block
+--     is directly in front of it, not its own block) -- same physical
+--     placement that worked for debug-block-reader.lua.
+--   - Modem: any free side of this computer -- Wireless Modem if the
 --     dashboard is in the same base/render distance, Ender Modem if it's
 --     far away or in another dimension (unlimited range, no cable needed
 --     either way: wireless/ender modems talk over the air, not cable)
@@ -20,20 +33,20 @@
 -- you can check what happened after the fact even without watching the
 -- screen -- e.g. run `edit broadcast.log` in the shell.
 --
--- GUARD: Advanced Peripherals has a known bug where getEnergy() clamps to
--- the 32-bit signed max (2147483647, ~2.15B) on cells/networks storing
--- more than that -- see IntelligenceModding/AdvancedPeripherals#642. A
--- clamped reading is silently WRONG (the real stored energy is higher
--- than what's reported), so detectAnomaly() below flags it -- and a few
--- other "this number doesn't make sense" cases -- instead of trusting
--- every number the peripheral hands back.
+-- GUARD: detectAnomaly() below still flags NaN / negative / energy >
+-- maxEnergy / an int32-clamp signature, as defense in depth in case
+-- Powah's NBT ever changes shape -- it should never trigger reading raw
+-- NBT longs, but "should never" isn't "can't."
 
 local CHANNEL = 6060
-local ENDER_CELL_SIDE = "top"
 local INTERVAL_SECONDS = 1
 local LOG_FILE = "broadcast.log"
 local LOG_MAX_LINES = 50
 local INT32_MAX = 2147483647
+
+-- Confirmed via debug-block-reader.lua against a powah:ender_cell_nitro.
+local ENERGY_FIELD = "energy_stored_main_energy"
+local CAPACITY_FIELD = "energy_capacity_main_energy"
 
 -- Returns a short problem description, or nil if the reading looks sane.
 local function detectAnomaly(energy, maxEnergy)
@@ -77,18 +90,13 @@ end
 -- ---------------------------------------------------------------------
 
 local ok, err = pcall(function()
-  local cell = peripheral.wrap(ENDER_CELL_SIDE)
-  if not cell then
-    error(("no peripheral on side '%s' -- is the Ender Cell placed there?"):format(ENDER_CELL_SIDE), 0)
+  local reader = peripheral.find("block_reader")
+  if not reader then
+    error("no 'block_reader' peripheral found -- attach a Block Reader (Advanced Peripherals) facing the Ender Cell", 0)
   end
 
-  local cellType = peripheral.getType(ENDER_CELL_SIDE)
-  if cellType ~= "ender_cell" then
-    error(("peripheral on '%s' is a '%s', not an 'ender_cell' -- check placement, and that Advanced Peripherals is installed"):format(ENDER_CELL_SIDE, tostring(cellType)), 0)
-  end
-
-  if type(cell.getEnergy) ~= "function" or type(cell.getMaxEnergy) ~= "function" then
-    error("ender_cell peripheral is missing getEnergy()/getMaxEnergy() -- wrong Advanced Peripherals version?", 0)
+  if type(reader.getBlockData) ~= "function" then
+    error("block_reader peripheral is missing getBlockData() -- wrong Advanced Peripherals version?", 0)
   end
 
   local modem = peripheral.find("modem")
@@ -96,14 +104,27 @@ local ok, err = pcall(function()
     error("no modem peripheral found -- attach a Wireless or Ender Modem to this computer", 0)
   end
 
-  local probeOk, probeEnergy, probeMax = pcall(function()
-    return cell.getEnergy(), cell.getMaxEnergy()
-  end)
-  if not probeOk or type(probeEnergy) ~= "number" or type(probeMax) ~= "number" then
-    error("ender_cell did not return usable numbers from getEnergy()/getMaxEnergy() -- got: " .. tostring(probeEnergy), 0)
+  -- Reads the two fields, with clear errors for every way this can go
+  -- wrong: reader facing nothing, facing the wrong block, or Powah
+  -- having renamed its NBT fields since debug-block-reader.lua ran.
+  local function readCell()
+    local data = reader.getBlockData()
+    if not data then
+      error("getBlockData() returned nil -- is the Block Reader actually facing the Ender Cell?", 0)
+    end
+    local energy, maxEnergy = data[ENERGY_FIELD], data[CAPACITY_FIELD]
+    if type(energy) ~= "number" or type(maxEnergy) ~= "number" then
+      error(("NBT is missing '%s'/'%s' as numbers -- Powah's schema may have changed, re-run debug-block-reader.lua"):format(ENERGY_FIELD, CAPACITY_FIELD), 0)
+    end
+    return energy, maxEnergy
   end
 
-  log("READY cell=%d/%d FE, broadcasting on ch.%d every %ds", probeEnergy, probeMax, CHANNEL, INTERVAL_SECONDS)
+  local probeOk, probeEnergy, probeMax = pcall(readCell)
+  if not probeOk then
+    error(tostring(probeEnergy), 0)
+  end
+
+  log("READY cell=%.0f/%.0f FE, broadcasting on ch.%d every %ds", probeEnergy, probeMax, CHANNEL, INTERVAL_SECONDS)
 
   local startupAnomaly = detectAnomaly(probeEnergy, probeMax)
   if startupAnomaly then
@@ -112,9 +133,7 @@ local ok, err = pcall(function()
   local lastAnomaly = startupAnomaly
 
   while true do
-    local readOk, energy, maxEnergy = pcall(function()
-      return cell.getEnergy(), cell.getMaxEnergy()
-    end)
+    local readOk, energy, maxEnergy = pcall(readCell)
 
     if readOk then
       modem.transmit(CHANNEL, CHANNEL, {

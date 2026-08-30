@@ -23,7 +23,7 @@ Pastebin's public API has no "edit an existing paste" endpoint — only create (
 | [`scripts/skeleton.lua`](./scripts/skeleton.lua) | Template | Starting point for a new script: timed tick + event loop, wrapped in `pcall` |
 | [`scripts/sensor-broadcaster.lua`](./scripts/sensor-broadcaster.lua) | Template | Reads a peripheral on an interval, broadcasts the reading over `rednet` |
 | [`scripts/monitor-dashboard.lua`](./scripts/monitor-dashboard.lua) | Template | Listens for a broadcast and renders it on a monitor |
-| [`scripts/ender-cell-broadcaster.lua`](./scripts/ender-cell-broadcaster.lua) | Ready to use | Reads a POWAH Ender Cell directly above the computer, broadcasts stored/max energy over a modem on a fixed channel |
+| [`scripts/ender-cell-broadcaster.lua`](./scripts/ender-cell-broadcaster.lua) | Ready to use | Reads a POWAH Ender Cell's raw NBT via a Block Reader (no int32 clamp), broadcasts stored/max energy over a modem on a fixed channel |
 | [`scripts/powah-ender-cell-dashboard.lua`](./scripts/powah-ender-cell-dashboard.lua) | Ready to use | Receives that broadcast and renders it on a monitor: stored/capacity, fill %, FE/s rate, "no signal" state if the broadcaster goes quiet |
 | [`scripts/startup-broadcaster.lua`](./scripts/startup-broadcaster.lua) | Install as `startup.lua` | Auto-runs `ender-cell-broadcaster.lua` fresh from GitHub on every boot of the broadcaster computer |
 | [`scripts/startup-dashboard.lua`](./scripts/startup-dashboard.lua) | Install as `startup.lua` | Auto-runs `powah-ender-cell-dashboard.lua` fresh from GitHub on every boot of the dashboard computer |
@@ -33,20 +33,18 @@ Templates are meant to be copied and customized, not run as-is — each one list
 
 This is a **two-computer setup**: one computer sits on the Ender Cell and broadcasts, a separate computer (anywhere in modem range) receives and drives the monitor. Both scripts hard-code `CHANNEL = 6060` at the top — if you change it, change it in both files, or the dashboard will sit at "Waiting for signal" forever.
 
-### Known limitation: the int32 energy clamp
+### The int32 energy clamp, and how it's avoided
 
-Advanced Peripherals' `ender_cell.getEnergy()` clamps to the 32-bit signed max (`2147483647`, ~2.15B FE) for a cell/network storing more than that — confirmed upstream at [IntelligenceModding/AdvancedPeripherals#642](https://github.com/IntelligenceModding/AdvancedPeripherals/issues/642). This is a limitation of the peripheral's own return value, not something the scripts here can route around by asking for it "differently" — once clamped, the true number is already lost before it reaches Lua.
+Advanced Peripherals' `ender_cell.getEnergy()` clamps to the 32-bit signed max (`2147483647`, ~2.15B FE) for a cell/network storing more than that — confirmed upstream at [IntelligenceModding/AdvancedPeripherals#642](https://github.com/IntelligenceModding/AdvancedPeripherals/issues/642), and confirmed directly against this world with `scripts/debug-block-reader.lua` on a `powah:ender_cell_nitro`. That method's return value is a dead end once clamped — the true number is already lost before it reaches Lua, so there's no way to ask it for something more precise.
 
-Two consequences worth knowing:
-- The clamped value is **constant** while true energy stays above the cap, so it can never be used to derive a rate (`maxEnergy - clampedEnergy` is a fixed number, not a live consumption figure).
-- `powah-ender-cell-dashboard.lua`'s guard detects this exact signature (`energy == 2147483647` while `maxEnergy` is larger) and shows a `%+ (min)` floor instead of a false precise percentage, and hides FE/s instead of a fake `0 FE/s`.
+Instead, `ender-cell-broadcaster.lua` reads the Ender Cell's raw NBT through Advanced Peripherals' **Block Reader** peripheral, which isn't limited to a 32-bit int. `debug-block-reader.lua`'s dump confirmed the exact fields: `energy_stored_main_energy` and `energy_capacity_main_energy`, both well past int32 range with no clamping. If a future Powah/Advanced Peripherals update renames these, re-run `debug-block-reader.lua` and update the two constants at the top of the broadcaster.
 
-`scripts/debug-block-reader.lua` is a one-off tool to check whether Powah's raw NBT (read via Advanced Peripherals' Block Reader, which isn't limited to `int`) exposes an unclamped value we could read instead — Powah's NBT schema isn't documented anywhere public, so this needs an in-game dump to confirm rather than a guess.
+`powah-ender-cell-dashboard.lua`'s guard (`detectAnomaly`) still checks for the old clamp signature as defense in depth — it shouldn't ever trigger reading raw NBT, but costs nothing to keep.
 
 ### Wiring
 
 **Broadcaster computer** (`ender-cell-broadcaster.lua`):
-- **Ender Cell directly on top of it** — the script reads peripheral side `"top"` specifically (not `peripheral.find`), since that's a fixed, known placement. If you place the cell on a different face, edit `ENDER_CELL_SIDE` at the top of the script to match.
+- **A Block Reader (Advanced Peripherals) placed facing the Ender Cell** — it reads whatever block is directly in front of it, not its own block. Use the same placement that worked for `debug-block-reader.lua` if you ran that first.
 - **A modem on any other free side** — no cable needed, it talks over the air:
   - **Wireless Modem** if the dashboard is going to be somewhere in the same base/render distance.
   - **Ender Modem** if the dashboard is far away or in another dimension — unlimited range, no line-of-sight or distance limit, but costs more to craft.
