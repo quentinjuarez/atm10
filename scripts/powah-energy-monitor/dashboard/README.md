@@ -7,7 +7,7 @@ Receives both broadcast types on `CHANNEL`, renders both on a monitor. See [`../
 - **Modem** on any free side — just needs to be in range of both broadcasters' modems, no cable back to either of them.
 - **Monitor**, either directly adjacent to this computer or over a **Wired Modem + Networking Cable** run if you want the screen elsewhere in the base: a Wired Modem against the computer, one against the monitor, Networking Cable between them, then **right-click every modem once to activate it** (light turns on) — the single most common reason a script reports "no peripheral found."
 - **Monitor type.** An Advanced Monitor gives colored fill bars (green/yellow/red by charge level) and colored flow numbers; a plain Monitor works too, just without color — `monitor.isColor()` is checked and adapts automatically.
-- **Monitor size.** `setTextScale(0.5)` needs up to ~18 rows in the worst case (both streams' warnings plus a full source breakdown). Per the [ComputerCraft resolution reference](https://www.computercraft.info/wiki/Resolution), a single monitor block at scale 0.5 gives roughly **15×10 characters** — not enough anymore. Build **1 block wide × 2 blocks tall** (blocks merge into one screen automatically when placed edge-to-edge): roughly 15×24 characters, comfortable headroom.
+- **Monitor size.** Built and tested at **5 blocks wide × 3 tall** with `setTextScale(1)` (`TEXT_SCALE` at the top of `run.lua`) — big, legible from a distance, and wide enough for the graph to show close to the full `FLOW_HISTORY_SECONDS` (60s) window. Whatever size you build, `render()` reads `monitor.getSize()` live and lays out (bar, warnings, graph) to fit — no size is hard-coded. Smaller monitors just show a narrower/shorter graph and may clip the per-source breakdown; there's no hard minimum, but a single block at scale 1 (~7×5 chars) is too small to be useful. Bump `TEXT_SCALE` up for even bigger text (at the cost of graph resolution) or down for a wider graph window.
 
 ## Install
 
@@ -32,6 +32,14 @@ Then `reboot` to activate `startup.lua`. To test a change without rebooting: `wg
 **Decision.** `render()` uses a `row` cursor (`writeLine()` returns the next free row) instead of fixed `monitor.setCursorPos(1, <n>)` calls, for both sections. `Total: ... FE/t` shows whenever `totalFlowFEt` is present; the per-source breakdown only renders when there's more than one source (a single source would just repeat what `Total` already says), and is capped at `MAX_SOURCE_LINES = 4` with a `+N more` line past that.
 
 **Consequences.** Works identically whether 0 or many Energy Detectors are attached, and whether either broadcaster is currently reachable — no dashboard change needed as more power sources get built or a broadcaster's wiring changes. Source names are CC:Tweaked's auto-assigned peripheral names (e.g. `energy_detector_0`); `sourceLabel()` shortens the common `_<N>` suffix pattern to `src 0` for a small monitor, falling back to the raw name otherwise.
+
+## ADR: rolling bar graph + current-hour min/max, computed here not broadcast
+
+**Context.** A single `Total: X FE/t` number doesn't show a trend, and the flow broadcaster already sends a sample every second — there's no need to ask it to also track history or min/max; the dashboard already receives every sample and can keep its own window.
+
+**Decision.** Every `kind="energy_flow"` message appends `{t, value=totalFlowFEt}` to `flowHistory`, trimmed to the last `FLOW_HISTORY_SECONDS` (60s) by timestamp. `hourMin`/`hourMax` track the running min/max of `totalFlowFEt`, reset whenever `floor(epoch_ms / 3600000)` (an hour-bucket number) changes from the previous sample's — pure integer arithmetic, no dependency on `os.date`'s format-string support. `drawGraph()` renders `flowHistory` as a bottom-up bar chart, one column per pixel of monitor width, newest sample at the right edge, each bar's height scaled between `hourMin`/`hourMax` (not a per-frame local min/max, so the graph's vertical scale stays stable instead of jumping every redraw) and colored via the same `flowColor()` as everything else.
+
+**Consequences.** The graph and hour min/max reset on every dashboard reboot (no on-disk persistence) — acceptable for "current hour" framing, but a reboot mid-hour loses that hour's earlier extremes. Graph width is whatever the monitor provides; a monitor narrower than ~60 columns shows fewer than 60 seconds of history rather than compressing samples, so the visible window shrinks with a smaller build instead of the graph misleadingly rescaling.
 
 ## ADR: rate calculated from the broadcaster's timestamps, not receipt time
 

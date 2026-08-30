@@ -5,7 +5,9 @@
 --   kind="ender_cell"   from ../ender-cell-broadcaster/run.lua -- stored
 --                        energy, capacity, fill %, a level-based FE/s rate
 --   kind="energy_flow"  from ../energy-detector-broadcaster/run.lua --
---                        total FE/t flow and a per-source breakdown
+--                        total FE/t flow, a per-source breakdown, a
+--                        rolling ~60s bar graph, and the current hour's
+--                        min/max flow
 --
 -- These are two separate broadcaster computers/scripts (see this folder's
 -- README.md and ../README.md for why), so each stream is tracked with
@@ -44,6 +46,8 @@ local STALE_AFTER_SECONDS = 5 -- no signal warning if nothing received this long
 local REDRAW_SECONDS = 1
 local LOG_FILE = "dashboard.log"
 local LOG_MAX_LINES = 50
+local FLOW_HISTORY_SECONDS = 60 -- rolling window for the graph
+local TEXT_SCALE = 1 -- bigger/more readable than the default 0.5; trades width
 
 local INT32_MAX = 2147483647
 
@@ -127,13 +131,47 @@ local function barColor(pct)
   return colors.green
 end
 
-local function drawBar(x, y, width, pct, color)
+local function drawBar(x, y, width, height, pct, color)
   local filled = math.floor(width * math.min(math.max(pct, 0), 100) / 100)
-  monitor.setCursorPos(x, y)
-  if color then monitor.setBackgroundColor(color) end
-  monitor.write(string.rep(" ", filled))
-  if color then monitor.setBackgroundColor(colors.black) end
-  monitor.write(string.rep(" ", width - filled))
+  for dy = 0, height - 1 do
+    monitor.setCursorPos(x, y + dy)
+    if color then monitor.setBackgroundColor(color) end
+    monitor.write(string.rep(" ", filled))
+    if color then monitor.setBackgroundColor(colors.black) end
+    monitor.write(string.rep(" ", width - filled))
+  end
+  monitor.setBackgroundColor(colors.black)
+end
+
+-- Rolling bar-chart of `history` ({t=, value=}, oldest first), newest
+-- sample at the rightmost column, scaled between minV/maxV. One column
+-- per pixel of width; a flat (or not-yet-established) range just draws
+-- every bar at half height rather than dividing by zero.
+local function drawGraph(x, yTop, width, height, history, minV, maxV)
+  local n = #history
+  local range = maxV - minV
+  for col = 0, width - 1 do
+    local idx = n - width + 1 + col
+    local barHeight = 0
+    local color = colors.gray
+    if idx >= 1 and idx <= n then
+      local v = history[idx].value
+      color = flowColor(v)
+      if range > 0 then
+        barHeight = math.floor((v - minV) / range * height + 0.5)
+      else
+        barHeight = math.floor(height / 2)
+      end
+      barHeight = math.max(0, math.min(height, barHeight))
+    end
+    for row = 0, height - 1 do
+      local fromBottom = height - 1 - row
+      monitor.setCursorPos(x + col, yTop + row)
+      monitor.setBackgroundColor(fromBottom < barHeight and color or colors.black)
+      monitor.write(" ")
+    end
+  end
+  monitor.setBackgroundColor(colors.black)
 end
 
 -- ---------------------------------------------------------------------
@@ -146,6 +184,10 @@ local lastCellReceivedAt = nil -- os.epoch("utc") of last kind="ender_cell"
 
 local lastFlow = nil           -- most recent kind="energy_flow" payload
 local lastFlowReceivedAt = nil -- os.epoch("utc") of last kind="energy_flow"
+
+local flowHistory = {}    -- {t=, value=} samples, oldest first, trimmed to FLOW_HISTORY_SECONDS
+local hourBucket = nil    -- current floor(epoch_ms / 3600000); a change means a new hour
+local hourMin, hourMax = nil, nil
 
 -- Writes one line and advances past it -- used so optional/variable-
 -- length sections (per-source breakdown, either stream going stale
@@ -162,13 +204,15 @@ local function render()
   monitor.setBackgroundColor(colors.black)
   monitor.clear()
 
+  local w, h = monitor.getSize()
   local row = 1
-  row = writeLine(row, "POWAH Ender Cell")
+  row = writeLine(row, "POWAH Energy Monitor")
   row = row + 1 -- blank
 
   -- ---- Storage level (kind="ender_cell") -----------------------------
   if not lastCell then
     row = writeLine(row, ("Waiting for cell signal (ch. %d)..."):format(CHANNEL), colors.gray)
+    row = row + 1
   else
     local energy, maxEnergy = lastCell.energy, lastCell.maxEnergy
     local anomaly = detectAnomaly(energy, maxEnergy)
@@ -176,7 +220,7 @@ local function render()
 
     -- Level-based rate: near-useless once the network sits pinned near
     -- 100% (a well-tuned power source keeps it there on purpose), but
-    -- harmless to keep as a secondary number -- Total/sources below are
+    -- harmless to keep as a secondary number -- Total/graph below are
     -- the actual production/consumption signal for that situation.
     local ratePerSec = nil
     local rateUnavailableReason = "warming up"
@@ -190,9 +234,9 @@ local function render()
     row = writeLine(row, anomaly and string.format("%.1f%%+ (min)", pct) or string.format("%.1f%%", pct))
     row = row + 1 -- blank
 
-    local w = select(1, monitor.getSize())
-    drawBar(1, row, math.max(w - 2, 10), pct, barColor(pct))
-    row = row + 2 -- bar row + blank
+    local barWidth = math.max(w - 2, 10)
+    drawBar(1, row, barWidth, 2, pct, barColor(pct))
+    row = row + 3 -- 2 bar rows + blank
 
     if ratePerSec then
       row = writeLine(row, string.format("%s/s", formatFE(ratePerSec)), ratePerSec >= 0 and colors.lime or colors.orange)
@@ -215,13 +259,18 @@ local function render()
   -- ---- Flow (kind="energy_flow") -------------------------------------
   if not lastFlow then
     row = writeLine(row, ("Waiting for flow signal (ch. %d)..."):format(CHANNEL), colors.gray)
+    row = row + 1
   else
     if type(lastFlow.totalFlowFEt) == "number" then
       row = writeLine(row, "Total: " .. formatFE(lastFlow.totalFlowFEt) .. "/t", flowColor(lastFlow.totalFlowFEt))
 
+      if hourMin and hourMax then
+        row = writeLine(row, "Hour min " .. formatFE(hourMin) .. "/t  max " .. formatFE(hourMax) .. "/t", colors.lightGray)
+      end
+
       -- Skip the breakdown when there's only one source -- Total already
       -- says the same thing. Cap the list so a growing sources array
-      -- (more generators added later) can't push warnings off-screen.
+      -- (more generators added later) can't push the graph off-screen.
       if type(lastFlow.sources) == "table" and #lastFlow.sources > 1 then
         local MAX_SOURCE_LINES = 4
         for i, source in ipairs(lastFlow.sources) do
@@ -241,6 +290,16 @@ local function render()
     local flowStaleSeconds = (os.epoch("utc") - lastFlowReceivedAt) / 1000
     if flowStaleSeconds > STALE_AFTER_SECONDS then
       row = writeLine(row, string.format("NO SIGNAL (flow, %ds ago)", math.floor(flowStaleSeconds)), colors.red)
+    end
+  end
+
+  row = row + 1 -- blank before the graph
+
+  -- ---- Rolling flow graph, fills whatever space is left ---------------
+  if #flowHistory > 0 and hourMin and hourMax then
+    local graphHeight = h - row
+    if graphHeight >= 3 then
+      drawGraph(1, row, w, graphHeight, flowHistory, hourMin, hourMax)
     end
   end
 end
@@ -275,7 +334,7 @@ local ok, err = pcall(function()
   end
 
   monitor = requirePeripheral("monitor", "output display")
-  monitor.setTextScale(0.5)
+  monitor.setTextScale(TEXT_SCALE)
 
   log("READY listening on ch.%d", CHANNEL)
   safeRender()
@@ -306,6 +365,24 @@ local ok, err = pcall(function()
       elseif message.kind == "energy_flow" then
         lastFlow = message
         lastFlowReceivedAt = os.epoch("utc")
+
+        if type(message.totalFlowFEt) == "number" then
+          local now = os.epoch("utc")
+          table.insert(flowHistory, { t = now, value = message.totalFlowFEt })
+          while #flowHistory > 0 and (now - flowHistory[1].t) > FLOW_HISTORY_SECONDS * 1000 do
+            table.remove(flowHistory, 1)
+          end
+
+          local bucket = math.floor(now / 3600000) -- ms per hour
+          if bucket ~= hourBucket then
+            hourBucket = bucket
+            hourMin, hourMax = message.totalFlowFEt, message.totalFlowFEt
+          else
+            hourMin = math.min(hourMin, message.totalFlowFEt)
+            hourMax = math.max(hourMax, message.totalFlowFEt)
+          end
+        end
+
         safeRender()
       end
     elseif event == "timer" and sideOrTimerId == redrawTimer then
