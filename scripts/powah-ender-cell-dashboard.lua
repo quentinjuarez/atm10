@@ -9,9 +9,21 @@
 --
 -- CHANNEL below must match CHANNEL in ender-cell-broadcaster.lua exactly.
 --
--- Every received reading (and any crash) is printed AND appended to
--- LOG_FILE, so you can check what happened after the fact even without
--- watching the screen -- e.g. run `edit dashboard.log` in the shell.
+-- Only problems get logged (guard warnings below, "no signal", crashes)
+-- -- not every routine reception, which would just be noise once you've
+-- confirmed receiving works. Logs are printed AND appended to LOG_FILE, so
+-- you can check what happened after the fact even without watching the
+-- screen -- e.g. run `edit dashboard.log` in the shell.
+--
+-- GUARD: Advanced Peripherals has a known bug where getEnergy() clamps to
+-- the 32-bit signed max (2147483647, ~2.15B) on cells/networks storing
+-- more than that -- see IntelligenceModding/AdvancedPeripherals#642. A
+-- clamped reading is silently WRONG (the real stored energy is higher
+-- than what's reported), so detectAnomaly() below flags it -- and a few
+-- other "this number doesn't make sense" cases -- instead of trusting
+-- every number the broadcaster hands back. When the guard is up, the
+-- fill % is a floor (actual is at least that), and FE/s is hidden rather
+-- than shown as a false "0 FE/s".
 
 local CHANNEL = 6060
 local STALE_AFTER_SECONDS = 5 -- no signal warning if nothing received this long
@@ -25,6 +37,19 @@ local CONFIG = {
   warn_below_pct = 25, -- draw the bar red below this
   ok_below_pct = 75,   -- yellow between warn and ok, green above
 }
+
+-- Returns a short problem description, or nil if the reading looks sane.
+local function detectAnomaly(energy, maxEnergy)
+  if energy ~= energy then return "energy is NaN" end
+  if maxEnergy ~= maxEnergy then return "maxEnergy is NaN" end
+  if energy < 0 then return "energy is negative" end
+  if maxEnergy < 0 then return "maxEnergy is negative" end
+  if energy > maxEnergy then return "energy > maxEnergy" end
+  if energy == INT32_MAX and maxEnergy > INT32_MAX then
+    return "clamped at int32 max"
+  end
+  return nil
+end
 
 -- ---------------------------------------------------------------------
 -- Logging: prints live and keeps a bounded on-disk history. Oldest
@@ -105,11 +130,14 @@ local function render()
   end
 
   local energy, maxEnergy = last.energy, last.maxEnergy
-  local suspiciouslyClamped = energy == INT32_MAX and maxEnergy > INT32_MAX
+  local anomaly = detectAnomaly(energy, maxEnergy)
   local pct = maxEnergy > 0 and (energy / maxEnergy * 100) or 0
 
   local ratePerSec = nil
-  if previous and last.t > previous.t and not suspiciouslyClamped then
+  local rateUnavailableReason = "warming up"
+  if anomaly then
+    rateUnavailableReason = "guard triggered"
+  elseif previous and last.t > previous.t and not detectAnomaly(previous.energy, previous.maxEnergy) then
     ratePerSec = (last.energy - previous.energy) / ((last.t - previous.t) / 1000)
   end
 
@@ -120,7 +148,11 @@ local function render()
   monitor.write(formatFE(energy) .. " / " .. formatFE(maxEnergy))
 
   monitor.setCursorPos(1, 4)
-  monitor.write(string.format("%.1f%%", pct))
+  if anomaly then
+    monitor.write(string.format("%.1f%%+ (min)", pct)) -- actual % may be higher, see guard
+  else
+    monitor.write(string.format("%.1f%%", pct))
+  end
 
   local w = select(1, monitor.getSize())
   drawBar(1, 6, math.max(w - 2, 10), pct, barColor(pct))
@@ -131,18 +163,18 @@ local function render()
     monitor.write(string.format("%s/s", formatFE(ratePerSec)))
   else
     monitor.setTextColor(colors.gray)
-    monitor.write("-- FE/s (warming up)")
+    monitor.write(("-- FE/s (%s)"):format(rateUnavailableReason))
   end
 
-  if suspiciouslyClamped then
+  if anomaly then
     monitor.setCursorPos(1, 10)
     monitor.setTextColor(colors.red)
-    monitor.write("WARNING: reading may be clamped (AP #642)")
+    monitor.write("GUARD: " .. anomaly)
   end
 
   local staleSeconds = (os.epoch("utc") - lastReceivedAt) / 1000
   if staleSeconds > STALE_AFTER_SECONDS then
-    monitor.setCursorPos(1, suspiciouslyClamped and 12 or 10)
+    monitor.setCursorPos(1, anomaly and 12 or 10)
     monitor.setTextColor(colors.red)
     monitor.write(string.format("NO SIGNAL (%ds ago)", math.floor(staleSeconds)))
   end
@@ -183,6 +215,7 @@ local ok, err = pcall(function()
   log("READY listening on ch.%d", CHANNEL)
   safeRender()
 
+  local lastAnomaly = nil
   local redrawTimer = os.startTimer(REDRAW_SECONDS)
   while true do
     local event, sideOrTimerId, channel, replyChannel, message = os.pullEvent()
@@ -193,8 +226,17 @@ local ok, err = pcall(function()
         previous = last
         last = message
         lastReceivedAt = os.epoch("utc")
-        local pct = message.maxEnergy > 0 and (message.energy / message.maxEnergy * 100) or 0
-        log("RX %d/%d FE (%.1f%%)", message.energy, message.maxEnergy, pct)
+
+        local anomaly = detectAnomaly(message.energy, message.maxEnergy)
+        if anomaly ~= lastAnomaly then
+          if anomaly then
+            log("GUARD: %s (energy=%s, maxEnergy=%s)", anomaly, tostring(message.energy), tostring(message.maxEnergy))
+          else
+            log("GUARD: reading back to normal (energy=%s, maxEnergy=%s)", tostring(message.energy), tostring(message.maxEnergy))
+          end
+          lastAnomaly = anomaly
+        end
+
         safeRender()
       end
     elseif event == "timer" and sideOrTimerId == redrawTimer then
