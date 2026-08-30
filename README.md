@@ -27,10 +27,21 @@ Pastebin's public API has no "edit an existing paste" endpoint — only create (
 | [`scripts/powah-ender-cell-dashboard.lua`](./scripts/powah-ender-cell-dashboard.lua) | Ready to use | Receives that broadcast and renders it on a monitor: stored/capacity, fill %, FE/s rate, "no signal" state if the broadcaster goes quiet |
 | [`scripts/startup-broadcaster.lua`](./scripts/startup-broadcaster.lua) | Install as `startup.lua` | Auto-runs `ender-cell-broadcaster.lua` fresh from GitHub on every boot of the broadcaster computer |
 | [`scripts/startup-dashboard.lua`](./scripts/startup-dashboard.lua) | Install as `startup.lua` | Auto-runs `powah-ender-cell-dashboard.lua` fresh from GitHub on every boot of the dashboard computer |
+| [`scripts/debug-block-reader.lua`](./scripts/debug-block-reader.lua) | One-off diagnostic | Dumps a Block Reader's peripheral list and NBT view of the block it faces — not meant to be left running |
 
 Templates are meant to be copied and customized, not run as-is — each one lists what to check before use (peripheral side/name, exact API method names, protocol string). "Ready to use" scripts still discover their peripherals by type at startup and fail with a clear error if something expected isn't attached, rather than assuming a side/slot.
 
 This is a **two-computer setup**: one computer sits on the Ender Cell and broadcasts, a separate computer (anywhere in modem range) receives and drives the monitor. Both scripts hard-code `CHANNEL = 6060` at the top — if you change it, change it in both files, or the dashboard will sit at "Waiting for signal" forever.
+
+### Known limitation: the int32 energy clamp
+
+Advanced Peripherals' `ender_cell.getEnergy()` clamps to the 32-bit signed max (`2147483647`, ~2.15B FE) for a cell/network storing more than that — confirmed upstream at [IntelligenceModding/AdvancedPeripherals#642](https://github.com/IntelligenceModding/AdvancedPeripherals/issues/642). This is a limitation of the peripheral's own return value, not something the scripts here can route around by asking for it "differently" — once clamped, the true number is already lost before it reaches Lua.
+
+Two consequences worth knowing:
+- The clamped value is **constant** while true energy stays above the cap, so it can never be used to derive a rate (`maxEnergy - clampedEnergy` is a fixed number, not a live consumption figure).
+- `powah-ender-cell-dashboard.lua`'s guard detects this exact signature (`energy == 2147483647` while `maxEnergy` is larger) and shows a `%+ (min)` floor instead of a false precise percentage, and hides FE/s instead of a fake `0 FE/s`.
+
+`scripts/debug-block-reader.lua` is a one-off tool to check whether Powah's raw NBT (read via Advanced Peripherals' Block Reader, which isn't limited to `int`) exposes an unclamped value we could read instead — Powah's NBT schema isn't documented anywhere public, so this needs an in-game dump to confirm rather than a guess.
 
 ### Wiring
 
