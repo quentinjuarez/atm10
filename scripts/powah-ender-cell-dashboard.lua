@@ -1,37 +1,24 @@
 -- powah-ender-cell-dashboard.lua
 --
--- Energy dashboard for a POWAH Ender Cell (Nitro tier or any other), read
--- through Advanced Peripherals' dedicated "ender_cell" peripheral type.
--- Renders stored energy, capacity, fill %, and a live FE/s rate on a
--- wrapped monitor.
+-- Energy dashboard that RECEIVES readings broadcast by
+-- ender-cell-broadcaster.lua over a modem, and renders stored energy,
+-- capacity, fill %, and a live FE/s rate on a wrapped monitor.
 --
--- REQUIRES: Powah + Advanced Peripherals (both confirmed in ATM10), the
--- Ender Cell reachable as a peripheral (adjacent to the computer, or on
--- the same wired modem network), and a monitor peripheral.
+-- This computer does NOT need to touch the Ender Cell itself -- only a
+-- modem (to receive) and a monitor (to display). See README "Wiring".
 --
--- Peripheral API (docs.advanced-peripherals.de, integrations/powah/ender_cell):
---   getName()        -> string
---   getEnergy()       -> number   stored FE
---   getMaxEnergy()    -> number   capacity FE
---   getChannel()      -> number   current ender channel
---   getMaxChannels()  -> number
---   setChannel(n)     -> nil
---
--- KNOWN CAVEAT: older Advanced Peripherals builds clamp getEnergy() to the
--- 32-bit signed max (2147483647) for cells storing more than that -- fixed
--- in AP's dev builds per IntelligenceModding/AdvancedPeripherals#642, but
--- your ATM10 build's exact AP version isn't something this script can see.
--- A Nitro Ender Cell alone (2B FE cap) stays under that limit, but multiple
--- cells sharing one ender channel can push the *network* total over it --
--- this script flags a suspicious reading instead of silently trusting it.
+-- CHANNEL below must match CHANNEL in ender-cell-broadcaster.lua exactly.
 
-local CONFIG = {
-  refresh_seconds = 2,
-  warn_below_pct = 25,   -- draw the bar red below this
-  ok_below_pct = 75,     -- yellow between warn and ok, green above
-}
+local CHANNEL = 6060
+local STALE_AFTER_SECONDS = 8 -- no signal warning if nothing received this long
+local REDRAW_SECONDS = 1
 
 local INT32_MAX = 2147483647
+
+local CONFIG = {
+  warn_below_pct = 25, -- draw the bar red below this
+  ok_below_pct = 75,   -- yellow between warn and ok, green above
+}
 
 -- ---------------------------------------------------------------------
 -- Peripheral discovery -- fail loudly and clearly instead of guessing.
@@ -40,45 +27,33 @@ local INT32_MAX = 2147483647
 local function requirePeripheral(kind, label)
   local p = peripheral.find(kind)
   if not p then
-    error(("no '%s' peripheral found (%s) -- check the block is placed next to this computer or on the same wired network"):format(kind, label), 0)
+    error(("no '%s' peripheral found (%s) -- check it's placed next to this computer or on the same wired network"):format(kind, label), 0)
   end
   return p
 end
 
-local function assertMethods(p, methods, label)
-  for _, name in ipairs(methods) do
-    if type(p[name]) ~= "function" then
-      error(("'%s' peripheral is missing method '%s' -- wrong mod version? (%s)"):format(label, name, label), 0)
-    end
-  end
+local modem = requirePeripheral("modem", "receiver for the Ender Cell broadcast")
+if not modem.isOpen(CHANNEL) then
+  modem.open(CHANNEL)
 end
-
-print("Looking for peripherals...")
-local cell = requirePeripheral("ender_cell", "POWAH Ender Cell, via Advanced Peripherals")
-assertMethods(cell, { "getEnergy", "getMaxEnergy" }, "ender_cell")
 
 local monitor = requirePeripheral("monitor", "output display")
 monitor.setTextScale(0.5)
 
--- Read once up front so a bad/empty cell fails before we ever draw anything.
-local okProbe, probeEnergy, probeMax = pcall(function()
-  return cell.getEnergy(), cell.getMaxEnergy()
-end)
-if not okProbe or type(probeEnergy) ~= "number" or type(probeMax) ~= "number" then
-  error("ender_cell peripheral did not return usable numbers from getEnergy()/getMaxEnergy()", 0)
-end
-print(("OK -- cell reports %d / %d FE"):format(probeEnergy, probeMax))
+print(("Listening on channel %d..."):format(CHANNEL))
 
 -- ---------------------------------------------------------------------
 -- Helpers
 -- ---------------------------------------------------------------------
 
 local function formatFE(n)
-  if n >= 1e12 then return string.format("%.2fT FE", n / 1e12) end
-  if n >= 1e9 then return string.format("%.2fB FE", n / 1e9) end
-  if n >= 1e6 then return string.format("%.2fM FE", n / 1e6) end
-  if n >= 1e3 then return string.format("%.2fK FE", n / 1e3) end
-  return string.format("%d FE", n)
+  local sign = n < 0 and "-" or ""
+  n = math.abs(n)
+  if n >= 1e12 then return string.format("%s%.2fT FE", sign, n / 1e12) end
+  if n >= 1e9 then return string.format("%s%.2fB FE", sign, n / 1e9) end
+  if n >= 1e6 then return string.format("%s%.2fM FE", sign, n / 1e6) end
+  if n >= 1e3 then return string.format("%s%.2fK FE", sign, n / 1e3) end
+  return string.format("%s%d FE", sign, n)
 end
 
 local function barColor(pct)
@@ -98,38 +73,36 @@ local function drawBar(x, y, width, pct, color)
 end
 
 -- ---------------------------------------------------------------------
--- Main loop
+-- State
 -- ---------------------------------------------------------------------
 
-local lastEnergy, lastTime = nil, nil
+local last = nil       -- most recent payload received {t, energy, maxEnergy}
+local previous = nil    -- payload before that, for rate calc
+local lastReceivedAt = nil -- os.epoch("utc") of last received message
 
-local function tick()
-  local ok, energy, maxEnergy = pcall(function()
-    return cell.getEnergy(), cell.getMaxEnergy()
-  end)
-
+local function render()
   monitor.setBackgroundColor(colors.black)
   monitor.clear()
+  monitor.setTextColor(colors.white)
 
-  if not ok or type(energy) ~= "number" or type(maxEnergy) ~= "number" then
+  if not last then
     monitor.setCursorPos(1, 1)
-    monitor.setTextColor(colors.red)
-    monitor.write("Ender Cell read failed: " .. tostring(energy))
+    monitor.write("POWAH Ender Cell")
+    monitor.setCursorPos(1, 3)
+    monitor.setTextColor(colors.gray)
+    monitor.write(("Waiting for signal on ch. %d..."):format(CHANNEL))
     return
   end
 
+  local energy, maxEnergy = last.energy, last.maxEnergy
   local suspiciouslyClamped = energy == INT32_MAX and maxEnergy > INT32_MAX
-
-  local now = os.epoch("utc")
-  local ratePerSec = nil
-  if lastEnergy and lastTime and now > lastTime and not suspiciouslyClamped then
-    ratePerSec = (energy - lastEnergy) / ((now - lastTime) / 1000)
-  end
-  lastEnergy, lastTime = energy, now
-
   local pct = maxEnergy > 0 and (energy / maxEnergy * 100) or 0
 
-  monitor.setTextColor(colors.white)
+  local ratePerSec = nil
+  if previous and last.t > previous.t and not suspiciouslyClamped then
+    ratePerSec = (last.energy - previous.energy) / ((last.t - previous.t) / 1000)
+  end
+
   monitor.setCursorPos(1, 1)
   monitor.write("POWAH Ender Cell")
 
@@ -145,7 +118,7 @@ local function tick()
   monitor.setCursorPos(1, 8)
   if ratePerSec then
     monitor.setTextColor(ratePerSec >= 0 and colors.lime or colors.orange)
-    monitor.write(string.format("%s%s FE/s", ratePerSec >= 0 and "+" or "", formatFE(ratePerSec)))
+    monitor.write(string.format("%s/s", formatFE(ratePerSec)))
   else
     monitor.setTextColor(colors.gray)
     monitor.write("-- FE/s (warming up)")
@@ -156,15 +129,35 @@ local function tick()
     monitor.setTextColor(colors.red)
     monitor.write("WARNING: reading may be clamped (AP #642)")
   end
+
+  local staleSeconds = (os.epoch("utc") - lastReceivedAt) / 1000
+  if staleSeconds > STALE_AFTER_SECONDS then
+    monitor.setCursorPos(1, suspiciouslyClamped and 12 or 10)
+    monitor.setTextColor(colors.red)
+    monitor.write(string.format("NO SIGNAL (%ds ago)", math.floor(staleSeconds)))
+  end
 end
 
+-- ---------------------------------------------------------------------
+-- Main loop
+-- ---------------------------------------------------------------------
+
 local ok, err = pcall(function()
-  local timer = os.startTimer(CONFIG.refresh_seconds)
+  local redrawTimer = os.startTimer(REDRAW_SECONDS)
   while true do
-    local event, a = os.pullEvent()
-    if event == "timer" and a == timer then
-      tick()
-      timer = os.startTimer(CONFIG.refresh_seconds)
+    local event, sideOrTimerId, channel, replyChannel, message = os.pullEvent()
+
+    if event == "modem_message" then
+      if channel == CHANNEL and type(message) == "table"
+        and type(message.energy) == "number" and type(message.maxEnergy) == "number" then
+        previous = last
+        last = message
+        lastReceivedAt = os.epoch("utc")
+        render()
+      end
+    elseif event == "timer" and sideOrTimerId == redrawTimer then
+      render()
+      redrawTimer = os.startTimer(REDRAW_SECONDS)
     elseif event == "peripheral_detach" then
       monitor.clear()
       monitor.setCursorPos(1, 1)
