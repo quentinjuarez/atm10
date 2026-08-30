@@ -10,7 +10,7 @@
 -- CHANNEL below must match CHANNEL in ender-cell-broadcaster.lua exactly.
 
 local CHANNEL = 6060
-local STALE_AFTER_SECONDS = 8 -- no signal warning if nothing received this long
+local STALE_AFTER_SECONDS = 5 -- no signal warning if nothing received this long
 local REDRAW_SECONDS = 1
 
 local INT32_MAX = 2147483647
@@ -53,7 +53,9 @@ local function formatFE(n)
   if n >= 1e9 then return string.format("%s%.2fB FE", sign, n / 1e9) end
   if n >= 1e6 then return string.format("%s%.2fM FE", sign, n / 1e6) end
   if n >= 1e3 then return string.format("%s%.2fK FE", sign, n / 1e3) end
-  return string.format("%s%d FE", sign, n)
+  -- n can be a fractional rate (e.g. an FE/s division result); CC:Tweaked's
+  -- Lua runtime errors on %d with a non-integral float, so round explicitly.
+  return string.format("%s%d FE", sign, math.floor(n + 0.5))
 end
 
 local function barColor(pct)
@@ -142,6 +144,15 @@ end
 -- Main loop
 -- ---------------------------------------------------------------------
 
+-- A single bad frame (e.g. an unexpected value from the broadcaster)
+-- should never take down the whole listening loop -- log it and keep going.
+local function safeRender()
+  local renderOk, renderErr = pcall(render)
+  if not renderOk then
+    print("render error: " .. tostring(renderErr))
+  end
+end
+
 local ok, err = pcall(function()
   local redrawTimer = os.startTimer(REDRAW_SECONDS)
   while true do
@@ -153,10 +164,10 @@ local ok, err = pcall(function()
         previous = last
         last = message
         lastReceivedAt = os.epoch("utc")
-        render()
+        safeRender()
       end
     elseif event == "timer" and sideOrTimerId == redrawTimer then
-      render()
+      safeRender()
       redrawTimer = os.startTimer(REDRAW_SECONDS)
     elseif event == "peripheral_detach" then
       monitor.clear()

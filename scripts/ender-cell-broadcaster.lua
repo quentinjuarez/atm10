@@ -16,7 +16,7 @@
 
 local CHANNEL = 6060
 local ENDER_CELL_SIDE = "top"
-local INTERVAL_SECONDS = 2
+local INTERVAL_SECONDS = 1
 
 -- ---------------------------------------------------------------------
 -- Peripheral checks -- fail loudly before the loop starts, per block.
