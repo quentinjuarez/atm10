@@ -243,7 +243,13 @@ local function render()
     row = writeLine(row, ("Waiting for flow signal (ch. %d)..."):format(CHANNEL), colors.gray)
     row = row + 1
   else
-    if type(lastFlow.totalFlowFEt) == "number" then
+    -- Checked in this order because totalFlowFEt is always a number (0
+    -- when nothing was found) -- checking it first would mean the
+    -- "no detector" message could never show, silently looking like
+    -- "0 FE/t" instead of "nothing is even attached".
+    if type(lastFlow.sources) == "table" and #lastFlow.sources == 0 then
+      row = writeLine(row, "No Energy Detector found", colors.gray)
+    elseif type(lastFlow.totalFlowFEt) == "number" then
       row = writeLine(row, "Total: " .. formatFE(lastFlow.totalFlowFEt) .. "/t", flowColor(lastFlow.totalFlowFEt))
 
       if hourMin and hourMax then
@@ -265,8 +271,6 @@ local function render()
           end
         end
       end
-    elseif type(lastFlow.sources) == "table" and #lastFlow.sources == 0 then
-      row = writeLine(row, "No Energy Detector found", colors.gray)
     end
 
     local flowStaleSeconds = (os.epoch("utc") - lastFlowReceivedAt) / 1000
