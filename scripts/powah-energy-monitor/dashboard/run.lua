@@ -1,13 +1,17 @@
--- powah-ender-cell-dashboard.lua
+-- powah-energy-monitor/dashboard/run.lua
 --
 -- Energy dashboard that RECEIVES readings broadcast by
--- ender-cell-broadcaster.lua over a modem, and renders stored energy,
+-- ../broadcaster/run.lua over a modem, and renders stored energy,
 -- capacity, fill %, and a live FE/s rate on a wrapped monitor.
 --
--- This computer does NOT need to touch the Ender Cell itself -- only a
--- modem (to receive) and a monitor (to display). See README "Wiring".
+-- Don't wget this file directly to install it -- see install.lua in this
+-- same folder, or the repo root README's "Installing a script in-game".
 --
--- CHANNEL below must match CHANNEL in ender-cell-broadcaster.lua exactly.
+-- This computer does NOT need to touch the Ender Cell itself -- only a
+-- modem (to receive) and a monitor (to display). See this folder's
+-- README.md for wiring and the decisions behind this design.
+--
+-- CHANNEL below must match CHANNEL in ../broadcaster/run.lua exactly.
 --
 -- Only problems get logged (guard warnings below, "no signal", crashes)
 -- -- not every routine reception, which would just be noise once you've

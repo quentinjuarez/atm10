@@ -1,19 +1,20 @@
--- debug-block-reader.lua
+-- powah-energy-monitor/debug-block-reader.lua
 --
 -- ONE-OFF DIAGNOSTIC, not something to leave running or auto-boot.
 --
 -- Advanced Peripherals' ender_cell.getEnergy() clamps to the 32-bit
 -- signed max (2147483647) on cells/networks storing more (see the header
--- comment in ender-cell-broadcaster.lua). This dumps whatever the Block
--- Reader peripheral sees on the block it's facing, to check whether the
--- raw NBT contains an unclamped value we could read instead.
+-- comment in broadcaster/run.lua). This dumps whatever the Block Reader
+-- peripheral sees on the block it's facing, to check whether the raw NBT
+-- contains an unclamped value we could read instead -- it does, see
+-- broadcaster/README.md for what this tool found and how it's used now.
 --
 -- WIRING: place a Block Reader (Advanced Peripherals) so it's FACING the
 -- Ender Cell -- it reads whatever block is directly in front of it, not
 -- its own block.
 --
 -- Run with:
---   wget run https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/debug-block-reader.lua
+--   wget run https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/powah-energy-monitor/debug-block-reader.lua
 --
 -- Everything below is ALSO written to debug-output.txt AS IT HAPPENS (not
 -- just at the end), so even if something errors partway through, whatever

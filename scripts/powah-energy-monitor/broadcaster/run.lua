@@ -1,8 +1,11 @@
--- ender-cell-broadcaster.lua
+-- powah-energy-monitor/broadcaster/run.lua
 --
 -- Reads a POWAH Ender Cell via a Block Reader (Advanced Peripherals)
 -- facing it, and broadcasts the energy reading over a modem on a fixed
--- channel, for powah-ender-cell-dashboard.lua to pick up elsewhere.
+-- channel, for ../dashboard/run.lua to pick up elsewhere.
+--
+-- Don't wget this file directly to install it -- see install.lua in this
+-- same folder, or the repo root README's "Installing a script in-game".
 --
 -- WHY BLOCK READER, NOT ender_cell.getEnergy(): Advanced Peripherals'
 -- dedicated ender_cell peripheral clamps getEnergy() to the 32-bit
@@ -10,22 +13,23 @@
 -- that -- see IntelligenceModding/AdvancedPeripherals#642. Block Reader
 -- instead returns the tile entity's raw NBT, which isn't limited to a
 -- 32-bit int, so it reports the true value. Confirmed in-world via
--- debug-block-reader.lua on a powah:ender_cell_nitro -- the two fields
+-- ../debug-block-reader.lua on a powah:ender_cell_nitro -- the two fields
 -- read below (ENERGY_FIELD / CAPACITY_FIELD) are exactly what it dumped,
 -- not a guess. If a future Powah/AP update renames them, re-run
--- debug-block-reader.lua and update the two constants below.
+-- ../debug-block-reader.lua and update the two constants below. Full
+-- decision record in this folder's README.md.
 --
--- WIRING (see README "Wiring" section for the full picture):
+-- WIRING (see this folder's README.md for the full picture):
 --   - Block Reader: placed FACING the Ender Cell (reads whatever block
 --     is directly in front of it, not its own block) -- same physical
---     placement that worked for debug-block-reader.lua.
+--     placement that worked for ../debug-block-reader.lua.
 --   - Modem: any free side of this computer -- Wireless Modem if the
 --     dashboard is in the same base/render distance, Ender Modem if it's
 --     far away or in another dimension (unlimited range, no cable needed
 --     either way: wireless/ender modems talk over the air, not cable)
 --
--- CHANNEL below must match CHANNEL in powah-ender-cell-dashboard.lua
--- exactly, or the dashboard will never see a message.
+-- CHANNEL below must match CHANNEL in ../dashboard/run.lua exactly, or
+-- the dashboard will never see a message.
 --
 -- Only problems get logged (read failures, crashes, guard warnings below)
 -- -- not every routine transmit, which would just be noise once you've
@@ -44,7 +48,7 @@ local LOG_FILE = "broadcast.log"
 local LOG_MAX_LINES = 50
 local INT32_MAX = 2147483647
 
--- Confirmed via debug-block-reader.lua against a powah:ender_cell_nitro.
+-- Confirmed via ../debug-block-reader.lua against a powah:ender_cell_nitro.
 local ENERGY_FIELD = "energy_stored_main_energy"
 local CAPACITY_FIELD = "energy_capacity_main_energy"
 
@@ -106,7 +110,7 @@ local ok, err = pcall(function()
 
   -- Reads the two fields, with clear errors for every way this can go
   -- wrong: reader facing nothing, facing the wrong block, or Powah
-  -- having renamed its NBT fields since debug-block-reader.lua ran.
+  -- having renamed its NBT fields since ../debug-block-reader.lua ran.
   local function readCell()
     local data = reader.getBlockData()
     if not data then
@@ -114,7 +118,7 @@ local ok, err = pcall(function()
     end
     local energy, maxEnergy = data[ENERGY_FIELD], data[CAPACITY_FIELD]
     if type(energy) ~= "number" or type(maxEnergy) ~= "number" then
-      error(("NBT is missing '%s'/'%s' as numbers -- Powah's schema may have changed, re-run debug-block-reader.lua"):format(ENERGY_FIELD, CAPACITY_FIELD), 0)
+      error(("NBT is missing '%s'/'%s' as numbers -- Powah's schema may have changed, re-run ../debug-block-reader.lua"):format(ENERGY_FIELD, CAPACITY_FIELD), 0)
     end
     return energy, maxEnergy
   end
