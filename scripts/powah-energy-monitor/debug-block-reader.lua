@@ -4,10 +4,11 @@
 --
 -- Advanced Peripherals' ender_cell.getEnergy() clamps to the 32-bit
 -- signed max (2147483647) on cells/networks storing more (see the header
--- comment in broadcaster/run.lua). This dumps whatever the Block Reader
--- peripheral sees on the block it's facing, to check whether the raw NBT
--- contains an unclamped value we could read instead -- it does, see
--- broadcaster/README.md for what this tool found and how it's used now.
+-- comment in ender-cell-broadcaster/run.lua). This dumps whatever the
+-- Block Reader peripheral sees on the block it's facing, to check
+-- whether the raw NBT contains an unclamped value we could read instead
+-- -- it does, see ender-cell-broadcaster/README.md for what this tool
+-- found and how it's used now.
 --
 -- WIRING: place a Block Reader (Advanced Peripherals) so it's FACING the
 -- Ender Cell -- it reads whatever block is directly in front of it, not

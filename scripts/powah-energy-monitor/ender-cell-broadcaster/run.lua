@@ -1,13 +1,11 @@
--- powah-energy-monitor/broadcaster/run.lua
+-- powah-energy-monitor/ender-cell-broadcaster/run.lua
 --
 -- Reads a POWAH Ender Cell via a Block Reader (Advanced Peripherals)
--- facing it, and broadcasts the energy reading over a modem on a fixed
--- channel, for ../dashboard/run.lua to pick up elsewhere. Also broadcasts
--- FE/t flow from every Advanced Peripherals Energy Detector reachable on
--- the network -- see the note below on why the Ender Cell level alone
--- can't show consumption, and this folder's README.md for why Energy
--- Detectors (not a Powah-specific peripheral) are the extensible way to
--- add more energy sources later.
+-- facing it, and broadcasts the stored/capacity energy over a modem on a
+-- fixed channel, for ../dashboard/run.lua to pick up elsewhere. Storage
+-- level only -- flow/production is a separate broadcast type, see
+-- ../energy-detector-broadcaster/run.lua and this folder's README.md for
+-- why they're two independent scripts instead of one.
 --
 -- Don't wget this file directly to install it -- see install.lua in this
 -- same folder, or the repo root README's "Installing a script in-game".
@@ -33,50 +31,31 @@
 --     far away or in another dimension (unlimited range, no cable needed
 --     either way: wireless/ender modems talk over the air, not cable)
 --
--- CHANNEL below must match CHANNEL in ../dashboard/run.lua exactly, or
--- the dashboard will never see a message.
+-- CHANNEL below must match CHANNEL in ../dashboard/run.lua and
+-- ../energy-detector-broadcaster/run.lua exactly. Both broadcast types
+-- share one channel; the dashboard tells them apart by payload `kind`.
 --
 -- Only problems get logged (read failures, crashes, guard warnings below)
 -- -- not every routine transmit, which would just be noise once you've
 -- confirmed sending works. Logs are printed AND appended to LOG_FILE, so
 -- you can check what happened after the fact even without watching the
--- screen -- e.g. run `edit broadcast.log` in the shell.
+-- screen -- e.g. run `edit ender-cell-broadcast.log` in the shell.
 --
 -- GUARD: detectAnomaly() below still flags NaN / negative / energy >
 -- maxEnergy / an int32-clamp signature, as defense in depth in case
 -- Powah's NBT ever changes shape -- it should never trigger reading raw
 -- NBT longs, but "should never" isn't "can't."
---
--- WHY THE ENDER CELL LEVEL CAN'T SHOW CONSUMPTION: a network sized for
--- 22B FE with a reactor that only turns on below 70% stays pinned at (or
--- extremely close to) 100% most of the time by design -- the level
--- barely moves even with real consumption happening, so FE/s computed
--- from level deltas is nearly always ~0. Flow, not level, is the right
--- signal.
---
--- WHY EVERY Energy Detector ON THE NETWORK, NOT A SPECIFIC GENERATOR
--- PERIPHERAL: getTransferRate() reads FE/t off a cable, which works
--- identically no matter which mod produced the power -- unlike Powah's
--- own Reactor peripheral (uraninite_reactor), which only exists for that
--- one block. Adding a second/third power source later (a different
--- generator, a different mod entirely) just means placing another Energy
--- Detector on ITS output cable -- no script change needed, it shows up
--- in the `sources` list automatically next broadcast.
 
 local CHANNEL = 6060
+local KIND = "ender_cell"
 local INTERVAL_SECONDS = 1
-local LOG_FILE = "broadcast.log"
+local LOG_FILE = "ender-cell-broadcast.log"
 local LOG_MAX_LINES = 50
 local INT32_MAX = 2147483647
 
 -- Confirmed via ../debug-block-reader.lua against a powah:ender_cell_nitro.
 local ENERGY_FIELD = "energy_stored_main_energy"
 local CAPACITY_FIELD = "energy_capacity_main_energy"
-
--- Every Advanced Peripherals Energy Detector reachable on the network is
--- read automatically -- none are required for the Ender Cell reading
--- above to keep working, and there's no fixed count to configure.
-local DETECTOR_TYPE = "energy_detector" -- "energyDetector" pre-1.21.1
 
 -- Returns a short problem description, or nil if the reading looks sane.
 local function detectAnomaly(energy, maxEnergy)
@@ -134,42 +113,6 @@ local ok, err = pcall(function()
     error("no modem peripheral found -- attach a Wireless or Ender Modem to this computer", 0)
   end
 
-  -- Finds every currently-attached Energy Detector by NAME (not just
-  -- type), since there can be more than one -- one per energy source.
-  -- Zero found is not an error, just an empty `sources` list broadcast.
-  local function findDetectorNames()
-    local names = {}
-    for _, name in ipairs(peripheral.getNames()) do
-      if peripheral.getType(name) == DETECTOR_TYPE then
-        table.insert(names, name)
-      end
-    end
-    table.sort(names) -- stable order broadcast to broadcast
-    return names
-  end
-
-  local detectorNames = findDetectorNames()
-  log("Energy Detectors (%s) found: %d (%s)", DETECTOR_TYPE, #detectorNames,
-    #detectorNames > 0 and table.concat(detectorNames, ", ") or "none yet")
-
-  -- Reads every detector's flow, skipping (not erroring on) one that
-  -- fails or disappears mid-run -- re-lists names each cycle so a newly
-  -- placed detector shows up without restarting this script.
-  local function readSources()
-    local names = findDetectorNames()
-    local sources = {}
-    local total = 0
-    for _, name in ipairs(names) do
-      local d = peripheral.wrap(name)
-      local readOptOk, rate = pcall(d.getTransferRate)
-      if readOptOk and type(rate) == "number" then
-        table.insert(sources, { name = name, rateFEt = rate })
-        total = total + rate
-      end
-    end
-    return sources, total
-  end
-
   -- Reads the two fields, with clear errors for every way this can go
   -- wrong: reader facing nothing, facing the wrong block, or Powah
   -- having renamed its NBT fields since ../debug-block-reader.lua ran.
@@ -190,42 +133,23 @@ local ok, err = pcall(function()
     error(tostring(probeEnergy), 0)
   end
 
-  log("READY cell=%.0f/%.0f FE, broadcasting on ch.%d every %ds", probeEnergy, probeMax, CHANNEL, INTERVAL_SECONDS)
+  log("READY cell=%.0f/%.0f FE, broadcasting kind=%s on ch.%d every %ds", probeEnergy, probeMax, KIND, CHANNEL, INTERVAL_SECONDS)
 
   local startupAnomaly = detectAnomaly(probeEnergy, probeMax)
   if startupAnomaly then
     log("GUARD: %s (energy=%s, maxEnergy=%s)", startupAnomaly, tostring(probeEnergy), tostring(probeMax))
   end
   local lastAnomaly = startupAnomaly
-  local lastDetectorNames = table.concat(detectorNames, ",")
-  local lastActive = nil -- nil = unknown yet, else true/false on total flow ~= 0
 
   while true do
     local readOk, energy, maxEnergy = pcall(readCell)
 
     if readOk then
-      local sources, totalFlowFEt = readSources()
-
-      local currentDetectorNames = {}
-      for _, s in ipairs(sources) do table.insert(currentDetectorNames, s.name) end
-      local joined = table.concat(currentDetectorNames, ",")
-      if joined ~= lastDetectorNames then
-        log("Energy Detectors changed: now %d (%s)", #sources, joined ~= "" and joined or "none")
-        lastDetectorNames = joined
-      end
-
-      local active = totalFlowFEt ~= 0
-      if active ~= lastActive then
-        log("Total flow: %s (%.0f FE/t)", active and "ACTIVE" or "IDLE", totalFlowFEt)
-        lastActive = active
-      end
-
       modem.transmit(CHANNEL, CHANNEL, {
+        kind = KIND,
         t = os.epoch("utc"),
         energy = energy,
         maxEnergy = maxEnergy,
-        sources = sources,
-        totalFlowFEt = totalFlowFEt,
       })
 
       local anomaly = detectAnomaly(energy, maxEnergy)

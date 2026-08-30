@@ -1,21 +1,27 @@
 -- powah-energy-monitor/dashboard/run.lua
 --
--- Energy dashboard that RECEIVES readings broadcast by
--- ../broadcaster/run.lua over a modem, and renders stored energy,
--- capacity, fill %, and a live FE/s rate on a wrapped monitor -- plus a
--- total FE/t flow (and per-source breakdown) from every Energy Detector
--- the broadcaster finds, which is the actual production/consumption
--- signal once the network sits pinned near 100% (see ../README.md for
--- why level alone can't show that).
+-- Energy dashboard that RECEIVES two independent broadcast types over one
+-- modem channel and renders both on a monitor:
+--   kind="ender_cell"   from ../ender-cell-broadcaster/run.lua -- stored
+--                        energy, capacity, fill %, a level-based FE/s rate
+--   kind="energy_flow"  from ../energy-detector-broadcaster/run.lua --
+--                        total FE/t flow and a per-source breakdown
+--
+-- These are two separate broadcaster computers/scripts (see this folder's
+-- README.md and ../README.md for why), so each stream is tracked with
+-- its own "last received" state and can go stale independently -- losing
+-- one doesn't blank out the other.
 --
 -- Don't wget this file directly to install it -- see install.lua in this
 -- same folder, or the repo root README's "Installing a script in-game".
 --
--- This computer does NOT need to touch the Ender Cell itself -- only a
--- modem (to receive) and a monitor (to display). See this folder's
--- README.md for wiring and the decisions behind this design.
+-- This computer does NOT need to touch the Ender Cell or any Energy
+-- Detector itself -- only a modem (to receive) and a monitor (to
+-- display). See this folder's README.md for wiring and the decisions
+-- behind this design.
 --
--- CHANNEL below must match CHANNEL in ../broadcaster/run.lua exactly.
+-- CHANNEL below must match CHANNEL in both broadcaster run.lua files
+-- exactly.
 --
 -- Only problems get logged (guard warnings below, "no signal", crashes)
 -- -- not every routine reception, which would just be noise once you've
@@ -29,9 +35,9 @@
 -- clamped reading is silently WRONG (the real stored energy is higher
 -- than what's reported), so detectAnomaly() below flags it -- and a few
 -- other "this number doesn't make sense" cases -- instead of trusting
--- every number the broadcaster hands back. When the guard is up, the
--- fill % is a floor (actual is at least that), and FE/s is hidden rather
--- than shown as a false "0 FE/s".
+-- every number the ender-cell-broadcaster hands back. When the guard is
+-- up, the fill % is a floor (actual is at least that), and FE/s is
+-- hidden rather than shown as a false "0 FE/s".
 
 local CHANNEL = 6060
 local STALE_AFTER_SECONDS = 5 -- no signal warning if nothing received this long
@@ -131,17 +137,20 @@ local function drawBar(x, y, width, pct, color)
 end
 
 -- ---------------------------------------------------------------------
--- State
+-- State -- one independent track per broadcast `kind`.
 -- ---------------------------------------------------------------------
 
-local last = nil       -- most recent payload received {t, energy, maxEnergy}
-local previous = nil    -- payload before that, for rate calc
-local lastReceivedAt = nil -- os.epoch("utc") of last received message
+local lastCell = nil           -- most recent kind="ender_cell" payload
+local previousCell = nil       -- the one before that, for rate calc
+local lastCellReceivedAt = nil -- os.epoch("utc") of last kind="ender_cell"
 
--- Writes one line and advances past it -- used so optional fields
--- (total flow, per-source breakdown, growing or shrinking as sources
--- are added) can be present or absent without every other line's row
--- number needing to shift to compensate.
+local lastFlow = nil           -- most recent kind="energy_flow" payload
+local lastFlowReceivedAt = nil -- os.epoch("utc") of last kind="energy_flow"
+
+-- Writes one line and advances past it -- used so optional/variable-
+-- length sections (per-source breakdown, either stream going stale
+-- independently) can be present or absent without every other line's
+-- row number needing to shift to compensate.
 local function writeLine(row, text, color)
   monitor.setCursorPos(1, row)
   monitor.setTextColor(color or colors.white)
@@ -153,81 +162,90 @@ local function render()
   monitor.setBackgroundColor(colors.black)
   monitor.clear()
 
-  if not last then
-    writeLine(1, "POWAH Ender Cell")
-    writeLine(3, ("Waiting for signal on ch. %d..."):format(CHANNEL), colors.gray)
-    return
-  end
-
-  local energy, maxEnergy = last.energy, last.maxEnergy
-  local anomaly = detectAnomaly(energy, maxEnergy)
-  local pct = maxEnergy > 0 and (energy / maxEnergy * 100) or 0
-
-  -- Level-based rate: near-useless once the network sits pinned near
-  -- 100% (a well-tuned power source keeps it there on purpose), but
-  -- harmless to keep as a secondary number. totalFlowFEt / sources below
-  -- are the actual production/consumption signal for that situation.
-  local ratePerSec = nil
-  local rateUnavailableReason = "warming up"
-  if anomaly then
-    rateUnavailableReason = "guard triggered"
-  elseif previous and last.t > previous.t and not detectAnomaly(previous.energy, previous.maxEnergy) then
-    ratePerSec = (last.energy - previous.energy) / ((last.t - previous.t) / 1000)
-  end
-
   local row = 1
   row = writeLine(row, "POWAH Ender Cell")
   row = row + 1 -- blank
 
-  row = writeLine(row, formatFE(energy) .. " / " .. formatFE(maxEnergy))
-  row = writeLine(row, anomaly and string.format("%.1f%%+ (min)", pct) or string.format("%.1f%%", pct))
-  row = row + 1 -- blank
-
-  local w = select(1, monitor.getSize())
-  drawBar(1, row, math.max(w - 2, 10), pct, barColor(pct))
-  row = row + 2 -- bar row + blank
-
-  if ratePerSec then
-    row = writeLine(row, string.format("%s/s", formatFE(ratePerSec)), ratePerSec >= 0 and colors.lime or colors.orange)
+  -- ---- Storage level (kind="ender_cell") -----------------------------
+  if not lastCell then
+    row = writeLine(row, ("Waiting for cell signal (ch. %d)..."):format(CHANNEL), colors.gray)
   else
-    row = writeLine(row, ("-- FE/s (%s)"):format(rateUnavailableReason), colors.gray)
+    local energy, maxEnergy = lastCell.energy, lastCell.maxEnergy
+    local anomaly = detectAnomaly(energy, maxEnergy)
+    local pct = maxEnergy > 0 and (energy / maxEnergy * 100) or 0
+
+    -- Level-based rate: near-useless once the network sits pinned near
+    -- 100% (a well-tuned power source keeps it there on purpose), but
+    -- harmless to keep as a secondary number -- Total/sources below are
+    -- the actual production/consumption signal for that situation.
+    local ratePerSec = nil
+    local rateUnavailableReason = "warming up"
+    if anomaly then
+      rateUnavailableReason = "guard triggered"
+    elseif previousCell and lastCell.t > previousCell.t and not detectAnomaly(previousCell.energy, previousCell.maxEnergy) then
+      ratePerSec = (lastCell.energy - previousCell.energy) / ((lastCell.t - previousCell.t) / 1000)
+    end
+
+    row = writeLine(row, formatFE(energy) .. " / " .. formatFE(maxEnergy))
+    row = writeLine(row, anomaly and string.format("%.1f%%+ (min)", pct) or string.format("%.1f%%", pct))
+    row = row + 1 -- blank
+
+    local w = select(1, monitor.getSize())
+    drawBar(1, row, math.max(w - 2, 10), pct, barColor(pct))
+    row = row + 2 -- bar row + blank
+
+    if ratePerSec then
+      row = writeLine(row, string.format("%s/s", formatFE(ratePerSec)), ratePerSec >= 0 and colors.lime or colors.orange)
+    else
+      row = writeLine(row, ("-- FE/s (%s)"):format(rateUnavailableReason), colors.gray)
+    end
+
+    if anomaly then
+      row = writeLine(row, "GUARD: " .. anomaly, colors.red)
+    end
+
+    local cellStaleSeconds = (os.epoch("utc") - lastCellReceivedAt) / 1000
+    if cellStaleSeconds > STALE_AFTER_SECONDS then
+      row = writeLine(row, string.format("NO SIGNAL (cell, %ds ago)", math.floor(cellStaleSeconds)), colors.red)
+    end
   end
 
-  if type(last.totalFlowFEt) == "number" then
-    row = writeLine(row, "Total: " .. formatFE(last.totalFlowFEt) .. "/t", flowColor(last.totalFlowFEt))
+  row = row + 1 -- blank between the two sections
 
-    -- Skip the breakdown when there's only one source -- Total already
-    -- says the same thing. Cap the list so a growing sources array (more
-    -- generators added later) can't push GUARD/NO SIGNAL off-screen.
-    if type(last.sources) == "table" and #last.sources > 1 then
-      local MAX_SOURCE_LINES = 4
-      for i, source in ipairs(last.sources) do
-        if i > MAX_SOURCE_LINES then
-          row = writeLine(row, ("  +%d more"):format(#last.sources - MAX_SOURCE_LINES), colors.gray)
-          break
-        end
-        if type(source.name) == "string" and type(source.rateFEt) == "number" then
-          row = writeLine(row, "  " .. sourceLabel(source.name) .. ": " .. formatFE(source.rateFEt) .. "/t", flowColor(source.rateFEt))
+  -- ---- Flow (kind="energy_flow") -------------------------------------
+  if not lastFlow then
+    row = writeLine(row, ("Waiting for flow signal (ch. %d)..."):format(CHANNEL), colors.gray)
+  else
+    if type(lastFlow.totalFlowFEt) == "number" then
+      row = writeLine(row, "Total: " .. formatFE(lastFlow.totalFlowFEt) .. "/t", flowColor(lastFlow.totalFlowFEt))
+
+      -- Skip the breakdown when there's only one source -- Total already
+      -- says the same thing. Cap the list so a growing sources array
+      -- (more generators added later) can't push warnings off-screen.
+      if type(lastFlow.sources) == "table" and #lastFlow.sources > 1 then
+        local MAX_SOURCE_LINES = 4
+        for i, source in ipairs(lastFlow.sources) do
+          if i > MAX_SOURCE_LINES then
+            row = writeLine(row, ("  +%d more"):format(#lastFlow.sources - MAX_SOURCE_LINES), colors.gray)
+            break
+          end
+          if type(source.name) == "string" and type(source.rateFEt) == "number" then
+            row = writeLine(row, "  " .. sourceLabel(source.name) .. ": " .. formatFE(source.rateFEt) .. "/t", flowColor(source.rateFEt))
+          end
         end
       end
+    elseif type(lastFlow.sources) == "table" and #lastFlow.sources == 0 then
+      row = writeLine(row, "No Energy Detector found", colors.gray)
     end
-  elseif type(last.sources) == "table" and #last.sources == 0 then
-    row = writeLine(row, "No Energy Detector found", colors.gray)
-  end
 
-  row = row + 1 -- blank before warnings
-
-  if anomaly then
-    row = writeLine(row, "GUARD: " .. anomaly, colors.red)
-  end
-
-  local staleSeconds = (os.epoch("utc") - lastReceivedAt) / 1000
-  if staleSeconds > STALE_AFTER_SECONDS then
-    row = writeLine(row, string.format("NO SIGNAL (%ds ago)", math.floor(staleSeconds)), colors.red)
+    local flowStaleSeconds = (os.epoch("utc") - lastFlowReceivedAt) / 1000
+    if flowStaleSeconds > STALE_AFTER_SECONDS then
+      row = writeLine(row, string.format("NO SIGNAL (flow, %ds ago)", math.floor(flowStaleSeconds)), colors.red)
+    end
   end
 end
 
--- A single bad frame (e.g. an unexpected value from the broadcaster)
+-- A single bad frame (e.g. an unexpected value from a broadcaster)
 -- should never take down the whole listening loop -- log it and keep going.
 local function safeRender()
   local renderOk, renderErr = pcall(render)
@@ -251,7 +269,7 @@ local ok, err = pcall(function()
     return p
   end
 
-  local modem = requirePeripheral("modem", "receiver for the Ender Cell broadcast")
+  local modem = requirePeripheral("modem", "receiver for both broadcast types")
   if not modem.isOpen(CHANNEL) then
     modem.open(CHANNEL)
   end
@@ -267,12 +285,12 @@ local ok, err = pcall(function()
   while true do
     local event, sideOrTimerId, channel, replyChannel, message = os.pullEvent()
 
-    if event == "modem_message" then
-      if channel == CHANNEL and type(message) == "table"
+    if event == "modem_message" and channel == CHANNEL and type(message) == "table" then
+      if message.kind == "ender_cell"
         and type(message.energy) == "number" and type(message.maxEnergy) == "number" then
-        previous = last
-        last = message
-        lastReceivedAt = os.epoch("utc")
+        previousCell = lastCell
+        lastCell = message
+        lastCellReceivedAt = os.epoch("utc")
 
         local anomaly = detectAnomaly(message.energy, message.maxEnergy)
         if anomaly ~= lastAnomaly then
@@ -284,6 +302,10 @@ local ok, err = pcall(function()
           lastAnomaly = anomaly
         end
 
+        safeRender()
+      elseif message.kind == "energy_flow" then
+        lastFlow = message
+        lastFlowReceivedAt = os.epoch("utc")
         safeRender()
       end
     elseif event == "timer" and sideOrTimerId == redrawTimer then

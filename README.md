@@ -13,12 +13,17 @@ scripts/
 └── powah-energy-monitor/        one feature = one top-level folder
     ├── README.md                  shared architecture + decisions for this feature
     ├── debug-block-reader.lua     one-off diagnostic, not for auto-boot
-    ├── broadcaster/                one computer = one subfolder
+    ├── ender-cell-broadcaster/     one computer = one subfolder; storage level only
     │   ├── run.lua                   the real logic
     │   ├── startup.lua                fetched by install.lua, saved locally as startup.lua
     │   ├── install.lua                run once: creates startup.lua for you
     │   └── README.md                  wiring + ADR for this computer specifically
-    └── dashboard/
+    ├── energy-detector-broadcaster/ another computer = another subfolder; FE/t flow only
+    │   ├── run.lua
+    │   ├── startup.lua
+    │   ├── install.lua
+    │   └── README.md
+    └── dashboard/                   receives BOTH broadcast types, renders both
         ├── run.lua
         ├── startup.lua
         ├── install.lua
@@ -27,7 +32,9 @@ scripts/
 
 Each feature (a "main function" — right now just the one) gets its own top-level folder under `scripts/`, with one subfolder per computer it needs. Every computer subfolder follows the same three-file pattern: `run.lua` is the actual program, `startup.lua` is what ends up installed as the computer's real `startup.lua`, and `install.lua` is the one-time installer that fetches `startup.lua` and saves it under that exact name — see "Auto-boot" below for why that's a separate step from just running `run.lua`.
 
-Decisions that only make sense for one specific computer live in that computer's own `README.md` (wiring, sizing, why-this-not-that) — this file only covers what's shared across the whole repo. Read [`scripts/powah-energy-monitor/README.md`](./scripts/powah-energy-monitor/README.md), [`.../broadcaster/README.md`](./scripts/powah-energy-monitor/broadcaster/README.md), and [`.../dashboard/README.md`](./scripts/powah-energy-monitor/dashboard/README.md) for the actual build instructions and the reasoning behind them.
+The two broadcasters are deliberately separate scripts/computers, not one combined one — storage level (Ender Cell) and flow (Energy Detectors) are independent concerns with independent wiring, and can live on different computers if that suits the build. Both broadcast on the same channel; the dashboard tells their messages apart by a `kind` field and tracks each independently, so losing one doesn't blank out the other. See [`powah-energy-monitor/README.md`](./scripts/powah-energy-monitor/README.md)'s ADR for the full reasoning.
+
+Decisions that only make sense for one specific computer live in that computer's own `README.md` (wiring, sizing, why-this-not-that) — this file only covers what's shared across the whole repo. Read [`scripts/powah-energy-monitor/README.md`](./scripts/powah-energy-monitor/README.md) and each computer's own `README.md` for the actual build instructions and the reasoning behind them.
 
 ## Installing a script in-game
 
@@ -50,8 +57,10 @@ CC:Tweaked runs a file named exactly `startup.lua` in a computer's root automati
 You don't `wget` that file directly, though — its whole point is to be saved locally under the exact name `startup.lua`, and typing `wget <url> startup.lua` by hand is easy to get wrong. Instead, each computer has an `install.lua` that does that step for you:
 
 ```
--- one-time, on each computer:
-wget run https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/powah-energy-monitor/<broadcaster-or-dashboard>/install.lua
+-- one-time, on each computer (pick the matching folder):
+wget run https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/powah-energy-monitor/ender-cell-broadcaster/install.lua
+wget run https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/powah-energy-monitor/energy-detector-broadcaster/install.lua
+wget run https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/powah-energy-monitor/dashboard/install.lua
 ```
 
 Then `reboot`. After that, a reboot (or world/server restart) brings the computer back up already running the latest pushed `run.lua` — no need to `wget run` by hand again unless you're actively testing an in-progress change.
@@ -63,7 +72,7 @@ The `powah-energy-monitor` scripts print problems (crashes, guard warnings, read
 To read a log after the fact — e.g. to see why a computer isn't broadcasting after you weren't watching it:
 
 ```
-edit broadcast.log
+edit ender-cell-broadcast.log
 ```
 
 (`edit` is CC:Tweaked's built-in file viewer/editor; there's no separate `cat`/`type` program in the stock ROM. Ctrl+E to exit without saving.)

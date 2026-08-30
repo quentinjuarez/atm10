@@ -1,14 +1,14 @@
--- install.lua (broadcaster)
+-- install.lua (ender-cell-broadcaster)
 --
--- Run ONCE on the broadcaster computer to install auto-boot:
---   wget run https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/powah-energy-monitor/broadcaster/install.lua
+-- Run ONCE on the Ender Cell broadcaster computer to install auto-boot:
+--   wget run https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/powah-energy-monitor/ender-cell-broadcaster/install.lua
 --
 -- This fetches startup.lua (in this same repo folder) and saves it
 -- locally under that exact name -- CC:Tweaked auto-runs any file named
 -- "startup.lua" in a computer's root on every boot. You don't need to
 -- remember `wget <url> startup.lua` yourself; this does it for you.
 
-local STARTUP_URL = "https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/powah-energy-monitor/broadcaster/startup.lua"
+local STARTUP_URL = "https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/powah-energy-monitor/ender-cell-broadcaster/startup.lua"
 
 if fs.exists("startup.lua") then
   fs.delete("startup.lua")

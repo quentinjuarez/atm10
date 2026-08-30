@@ -1,4 +1,4 @@
--- startup.lua (broadcaster)
+-- startup.lua (energy-detector-broadcaster)
 --
 -- Don't wget this directly -- run install.lua in this same folder, which
 -- fetches this file and saves it locally AS "startup.lua". CC:Tweaked
@@ -9,7 +9,7 @@
 -- local copy of the real logic, same reasoning as the repo root README's
 -- "why not Pastebin" section.
 
-local URL = "https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/powah-energy-monitor/broadcaster/run.lua"
+local URL = "https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/powah-energy-monitor/energy-detector-broadcaster/run.lua"
 local MAX_ATTEMPTS = 5
 local RETRY_SECONDS = 3
 
