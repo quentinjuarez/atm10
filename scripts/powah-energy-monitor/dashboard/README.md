@@ -17,13 +17,13 @@ wget run https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/powa
 
 Then `reboot` to activate `startup.lua`. To test a change without rebooting: `wget run https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/powah-energy-monitor/dashboard/run.lua`.
 
-## ADR: dynamic row layout, and optional Reactor/flow lines
+## ADR: dynamic row layout, and a capped per-source breakdown
 
-**Context.** Once the broadcaster started optionally sending `reactorRunning` and `flowFEt` (see `../broadcaster/README.md`), hard-coded row numbers for everything below the bar would either collide or leave gaps depending on which optional fields showed up in a given payload.
+**Context.** The broadcaster's `sources` list (see `../broadcaster/README.md`) can hold zero, one, or many Energy Detectors, growing over time as more power sources get built — hard-coded row numbers for everything below the bar would either collide or leave gaps depending on how many showed up in a given payload.
 
-**Decision.** `render()` uses a `row` cursor (`writeLine()` returns the next free row) instead of fixed `monitor.setCursorPos(1, <n>)` calls. Reactor state and flow only take a line when `last.reactorRunning`/`last.flowFEt` are actually present; everything after them (blank line, `GUARD:`, `NO SIGNAL`) shifts automatically.
+**Decision.** `render()` uses a `row` cursor (`writeLine()` returns the next free row) instead of fixed `monitor.setCursorPos(1, <n>)` calls. `Total: ... FE/t` shows whenever `totalFlowFEt` is present; the per-source breakdown only renders when there's more than one source (a single source would just repeat what `Total` already says), and is capped at `MAX_SOURCE_LINES = 4` with a `+N more` line past that — everything after (blank line, `GUARD:`, `NO SIGNAL`) shifts automatically regardless of how many lines came before.
 
-**Consequences.** Works identically whether 0, 1, or both optional peripherals are attached — no dashboard change needed as you add an Energy Detector or Reactor link later. Worst case (guard *and* stale *and* both optional lines) is 13 rows, still comfortably inside the 24-row recommendation below.
+**Consequences.** Works identically whether 0 or many Energy Detectors are attached — no dashboard change needed as more power sources get built. Source names are CC:Tweaked's auto-assigned peripheral names (e.g. `energy_detector_0`); `sourceLabel()` shortens the common `_<N>` suffix pattern to `src 0` for a small monitor, falling back to the raw name otherwise.
 
 ## ADR: rate calculated from the broadcaster's timestamps, not receipt time
 

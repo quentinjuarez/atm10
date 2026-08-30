@@ -2,10 +2,12 @@
 --
 -- Reads a POWAH Ender Cell via a Block Reader (Advanced Peripherals)
 -- facing it, and broadcasts the energy reading over a modem on a fixed
--- channel, for ../dashboard/run.lua to pick up elsewhere. Also reports
--- the Reactor's running state and an Energy Detector's FE/t flow when
--- those peripherals are found -- both optional, see the note below on
--- why the Ender Cell level alone can't show consumption.
+-- channel, for ../dashboard/run.lua to pick up elsewhere. Also broadcasts
+-- FE/t flow from every Advanced Peripherals Energy Detector reachable on
+-- the network -- see the note below on why the Ender Cell level alone
+-- can't show consumption, and this folder's README.md for why Energy
+-- Detectors (not a Powah-specific peripheral) are the extensible way to
+-- add more energy sources later.
 --
 -- Don't wget this file directly to install it -- see install.lua in this
 -- same folder, or the repo root README's "Installing a script in-game".
@@ -50,11 +52,16 @@
 -- extremely close to) 100% most of the time by design -- the level
 -- barely moves even with real consumption happening, so FE/s computed
 -- from level deltas is nearly always ~0. Flow, not level, is the right
--- signal: REACTOR_TYPE below (Powah's Reactor, any tier) reports
--- isRunning() directly, and an optional Energy Detector placed inline on
--- the reactor's output cable reports real FE/t via getTransferRate().
--- Both are OPTIONAL -- if the peripheral isn't found, that field is just
--- left out of the broadcast and the dashboard skips it.
+-- signal.
+--
+-- WHY EVERY Energy Detector ON THE NETWORK, NOT A SPECIFIC GENERATOR
+-- PERIPHERAL: getTransferRate() reads FE/t off a cable, which works
+-- identically no matter which mod produced the power -- unlike Powah's
+-- own Reactor peripheral (uraninite_reactor), which only exists for that
+-- one block. Adding a second/third power source later (a different
+-- generator, a different mod entirely) just means placing another Energy
+-- Detector on ITS output cable -- no script change needed, it shows up
+-- in the `sources` list automatically next broadcast.
 
 local CHANNEL = 6060
 local INTERVAL_SECONDS = 1
@@ -66,12 +73,10 @@ local INT32_MAX = 2147483647
 local ENERGY_FIELD = "energy_stored_main_energy"
 local CAPACITY_FIELD = "energy_capacity_main_energy"
 
--- Optional peripherals -- see docs.advanced-peripherals.de integrations
--- for Powah's Reactor (any tier, incl. Nitro) and the core Energy
--- Detector peripheral. Neither is required for the Ender Cell reading
--- above to keep working.
-local REACTOR_TYPE = "uraninite_reactor"
-local ENERGY_DETECTOR_TYPE = "energy_detector" -- "energyDetector" pre-1.21.1
+-- Every Advanced Peripherals Energy Detector reachable on the network is
+-- read automatically -- none are required for the Ender Cell reading
+-- above to keep working, and there's no fixed count to configure.
+local DETECTOR_TYPE = "energy_detector" -- "energyDetector" pre-1.21.1
 
 -- Returns a short problem description, or nil if the reading looks sane.
 local function detectAnomaly(energy, maxEnergy)
@@ -129,20 +134,40 @@ local ok, err = pcall(function()
     error("no modem peripheral found -- attach a Wireless or Ender Modem to this computer", 0)
   end
 
-  -- Optional: neither missing peripheral is an error, they just won't
-  -- be in the broadcast until they're attached.
-  local reactor = peripheral.find(REACTOR_TYPE)
-  local detector = peripheral.find(ENERGY_DETECTOR_TYPE)
-  log("Reactor (%s): %s", REACTOR_TYPE, reactor and "found" or "not found, skipping")
-  log("Energy Detector (%s): %s", ENERGY_DETECTOR_TYPE, detector and "found" or "not found, skipping")
+  -- Finds every currently-attached Energy Detector by NAME (not just
+  -- type), since there can be more than one -- one per energy source.
+  -- Zero found is not an error, just an empty `sources` list broadcast.
+  local function findDetectorNames()
+    local names = {}
+    for _, name in ipairs(peripheral.getNames()) do
+      if peripheral.getType(name) == DETECTOR_TYPE then
+        table.insert(names, name)
+      end
+    end
+    table.sort(names) -- stable order broadcast to broadcast
+    return names
+  end
 
-  -- Returns the value from fn(peripheralRef), or nil if the peripheral
-  -- is absent or the call errors -- optional data is never fatal.
-  local function readOptional(peripheralRef, fn)
-    if not peripheralRef then return nil end
-    local readOptOk, result = pcall(fn, peripheralRef)
-    if readOptOk then return result end
-    return nil
+  local detectorNames = findDetectorNames()
+  log("Energy Detectors (%s) found: %d (%s)", DETECTOR_TYPE, #detectorNames,
+    #detectorNames > 0 and table.concat(detectorNames, ", ") or "none yet")
+
+  -- Reads every detector's flow, skipping (not erroring on) one that
+  -- fails or disappears mid-run -- re-lists names each cycle so a newly
+  -- placed detector shows up without restarting this script.
+  local function readSources()
+    local names = findDetectorNames()
+    local sources = {}
+    local total = 0
+    for _, name in ipairs(names) do
+      local d = peripheral.wrap(name)
+      local readOptOk, rate = pcall(d.getTransferRate)
+      if readOptOk and type(rate) == "number" then
+        table.insert(sources, { name = name, rateFEt = rate })
+        total = total + rate
+      end
+    end
+    return sources, total
   end
 
   -- Reads the two fields, with clear errors for every way this can go
@@ -172,33 +197,36 @@ local ok, err = pcall(function()
     log("GUARD: %s (energy=%s, maxEnergy=%s)", startupAnomaly, tostring(probeEnergy), tostring(probeMax))
   end
   local lastAnomaly = startupAnomaly
-  local lastReactorRunning = nil
+  local lastDetectorNames = table.concat(detectorNames, ",")
+  local lastActive = nil -- nil = unknown yet, else true/false on total flow ~= 0
 
   while true do
     local readOk, energy, maxEnergy = pcall(readCell)
 
     if readOk then
-      local payload = {
+      local sources, totalFlowFEt = readSources()
+
+      local currentDetectorNames = {}
+      for _, s in ipairs(sources) do table.insert(currentDetectorNames, s.name) end
+      local joined = table.concat(currentDetectorNames, ",")
+      if joined ~= lastDetectorNames then
+        log("Energy Detectors changed: now %d (%s)", #sources, joined ~= "" and joined or "none")
+        lastDetectorNames = joined
+      end
+
+      local active = totalFlowFEt ~= 0
+      if active ~= lastActive then
+        log("Total flow: %s (%.0f FE/t)", active and "ACTIVE" or "IDLE", totalFlowFEt)
+        lastActive = active
+      end
+
+      modem.transmit(CHANNEL, CHANNEL, {
         t = os.epoch("utc"),
         energy = energy,
         maxEnergy = maxEnergy,
-      }
-
-      local reactorRunning = readOptional(reactor, function(r) return r.isRunning() end)
-      if type(reactorRunning) == "boolean" then
-        payload.reactorRunning = reactorRunning
-        if reactorRunning ~= lastReactorRunning then
-          log("Reactor state: %s", reactorRunning and "RUNNING" or "IDLE")
-          lastReactorRunning = reactorRunning
-        end
-      end
-
-      local flowFEt = readOptional(detector, function(d) return d.getTransferRate() end)
-      if type(flowFEt) == "number" then
-        payload.flowFEt = flowFEt
-      end
-
-      modem.transmit(CHANNEL, CHANNEL, payload)
+        sources = sources,
+        totalFlowFEt = totalFlowFEt,
+      })
 
       local anomaly = detectAnomaly(energy, maxEnergy)
       if anomaly ~= lastAnomaly then

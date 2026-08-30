@@ -8,8 +8,7 @@ Reads the Ender Cell, transmits on `CHANNEL`. See [`../README.md`](../README.md)
 - **Modem** on any other free side of this computer — no cable needed, it talks over the air:
   - **Wireless Modem** if the dashboard is in the same base/render distance.
   - **Ender Modem** if it's far away or in another dimension — unlimited range, costs more to craft.
-- **Optional — Reactor state:** if a Powah Reactor (any tier) is reachable as a peripheral (adjacent, or on the same wired network), its `isRunning()` state is broadcast automatically. Nothing extra to place — just needs to be network-reachable like the Ender Cell.
-- **Optional — flow rate:** place an Advanced Peripherals **Energy Detector** inline on the cable between the Reactor's output and the network (i.e. the cable itself passes *through* the detector block) to get real FE/t. If it isn't present, `run.lua` just skips that field — nothing else breaks.
+- **Optional — one Energy Detector per energy source:** place an Advanced Peripherals **Energy Detector** inline on each source's output cable (the cable passes *through* the detector block) to get real FE/t for that source. Zero, one, or many — `run.lua` re-scans the network every cycle and broadcasts whatever it finds under `sources`, so adding a second/third power source later is just placing another detector, no script edit. None present just means an empty `sources` list, nothing else breaks.
 
 ## Install
 
@@ -27,13 +26,13 @@ Then `reboot` to activate `startup.lua`. To test a change without rebooting: `wg
 
 **Consequences.** No clamp regardless of network size. But this is now coupled to Powah's internal NBT schema, which isn't publicly documented and could change on a Powah/Advanced Peripherals update — if `run.lua` starts erroring with "NBT is missing '...' as numbers", re-run `../debug-block-reader.lua` and update the two field-name constants.
 
-## ADR: report flow (Reactor state + Energy Detector), not just level
+## ADR: report flow via Energy Detectors, not just level
 
-**Context.** A network sized well above actual consumption, with a reactor tuned to keep it topped up (this world: only runs below 70%), sits pinned at ~100% almost permanently by design. `energy`/`maxEnergy` barely move even with real consumption happening underneath — level is fundamentally the wrong signal to read "how much power is being used" once storage is oversized relative to draw. This showed up directly: the dashboard kept reading `22B/22B` with no visible change.
+**Context.** A network sized well above actual consumption, with a power source tuned to keep it topped up (this world: a Powah Reactor only runs below 70%), sits pinned at ~100% almost permanently by design. `energy`/`maxEnergy` barely move even with real consumption happening underneath — level is fundamentally the wrong signal to read "how much power is being used" once storage is oversized relative to draw. This showed up directly: the dashboard kept reading `22B/22B` with no visible change.
 
-**Decision.** Broadcast two additional, **optional** fields when their peripherals are reachable: `reactorRunning` (Powah Reactor's `isRunning()`, type `uraninite_reactor`) and `flowFEt` (Energy Detector's `getTransferRate()`, type `energy_detector` in 1.21.1+, `energyDetector` before). Neither is required — `readOptional()` returns `nil` and the field is simply left out of the payload if the peripheral isn't found or errors, so the Ender Cell reading keeps working with or without them.
+**Decision.** Broadcast `sources` (an array of `{name, rateFEt}`, one per Energy Detector found on the network) and `totalFlowFEt` (their sum). An earlier version read a Powah-specific `uraninite_reactor` peripheral for running state instead — dropped in favor of Energy Detectors for two reasons: it only works for that one Powah block, and `getTransferRate() ~= 0` already tells you a source is active without a separate state call. `sources`/`totalFlowFEt` are optional in the same sense as before — zero detectors found just broadcasts an empty list, the Ender Cell reading is unaffected either way.
 
-**Consequences.** `flowFEt` only reflects whatever single cable the detector sits on — placed between the Reactor and the network, it shows *production* while the reactor runs, not necessarily every consumer's draw everywhere. For a fuller picture (e.g. multiple separate consumer branches), a second Energy Detector on the consumer side would need its own broadcast field — not built yet, ask if that's needed.
+**Consequences.** Energy Detector's `getTransferRate()` reads FE/t off any FE-compatible cable regardless of which mod is on either end — a second, third, or entirely different power source later just needs its own detector on its output cable; `findDetectorNames()` re-scans `peripheral.getNames()` every cycle, so a newly placed detector shows up on its own, no script change or restart. Each detector's broadcast `name` is whatever CC:Tweaked auto-assigned it (e.g. `energy_detector_0`) — there's no confirmed way to give it a nicer custom label, so the dashboard just shortens that to `src 0`. A detector only reflects the one cable it sits on: placed between a source and the network it shows that source's output, not every consumer's draw everywhere on the network — a detector on a consumer branch instead would show consumption from that branch specifically.
 
 ## ADR: 1-second broadcast interval
 

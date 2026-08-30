@@ -1,6 +1,6 @@
 # POWAH energy monitor
 
-Two-computer system: a **broadcaster** sits on a POWAH Ender Cell and reads its energy over a modem channel, a **dashboard** listens and drives a monitor. Optionally also reports a Reactor's running state and an Energy Detector's FE/t flow — the real production/consumption signal once the network's storage is large enough that its level barely moves (see `broadcaster/README.md`'s "report flow, not just level" ADR). See [`broadcaster/README.md`](./broadcaster/README.md) and [`dashboard/README.md`](./dashboard/README.md) for the decisions specific to each computer — this file only covers what's shared between them.
+Two-computer system: a **broadcaster** sits on a POWAH Ender Cell and reads its energy over a modem channel, a **dashboard** listens and drives a monitor. It also reports FE/t flow from every Advanced Peripherals Energy Detector it finds on the network — the real production/consumption signal once the network's storage is large enough that its level barely moves — and scales to more power sources by just placing more detectors, no script change (see `broadcaster/README.md`'s "report flow via Energy Detectors" ADR). See [`broadcaster/README.md`](./broadcaster/README.md) and [`dashboard/README.md`](./dashboard/README.md) for the decisions specific to each computer — this file only covers what's shared between them.
 
 ## Layout
 

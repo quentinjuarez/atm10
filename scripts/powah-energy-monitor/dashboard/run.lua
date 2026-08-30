@@ -2,11 +2,11 @@
 --
 -- Energy dashboard that RECEIVES readings broadcast by
 -- ../broadcaster/run.lua over a modem, and renders stored energy,
--- capacity, fill %, and a live FE/s rate on a wrapped monitor -- plus,
--- when the broadcaster finds them, the Reactor's running state and the
--- Energy Detector's FE/t flow, which is the actual production/
--- consumption signal once the network sits pinned near 100% (see
--- ../README.md for why level alone can't show that).
+-- capacity, fill %, and a live FE/s rate on a wrapped monitor -- plus a
+-- total FE/t flow (and per-source breakdown) from every Energy Detector
+-- the broadcaster finds, which is the actual production/consumption
+-- signal once the network sits pinned near 100% (see ../README.md for
+-- why level alone can't show that).
 --
 -- Don't wget this file directly to install it -- see install.lua in this
 -- same folder, or the repo root README's "Installing a script in-game".
@@ -97,6 +97,21 @@ local function formatFE(n)
   return string.format("%s%d FE", sign, math.floor(n + 0.5))
 end
 
+-- Colors a flow number: lime producing, orange draining, gray idle/zero.
+local function flowColor(rateFEt)
+  if rateFEt > 0 then return colors.lime end
+  if rateFEt < 0 then return colors.orange end
+  return colors.gray
+end
+
+-- "energy_detector_0" -> "src 0" -- CC:Tweaked auto-assigns these names
+-- (no confirmed way to give a detector a custom label), so shorten the
+-- common case for a small monitor rather than showing the full name.
+local function sourceLabel(name)
+  local suffix = name:match("_(%d+)$")
+  return suffix and ("src " .. suffix) or name
+end
+
 local monitor -- assigned once peripheral discovery succeeds, below
 
 local function barColor(pct)
@@ -124,8 +139,9 @@ local previous = nil    -- payload before that, for rate calc
 local lastReceivedAt = nil -- os.epoch("utc") of last received message
 
 -- Writes one line and advances past it -- used so optional fields
--- (reactor state, flow rate) can be present or absent without every
--- other line's row number needing to shift to compensate.
+-- (total flow, per-source breakdown, growing or shrinking as sources
+-- are added) can be present or absent without every other line's row
+-- number needing to shift to compensate.
 local function writeLine(row, text, color)
   monitor.setCursorPos(1, row)
   monitor.setTextColor(color or colors.white)
@@ -148,9 +164,9 @@ local function render()
   local pct = maxEnergy > 0 and (energy / maxEnergy * 100) or 0
 
   -- Level-based rate: near-useless once the network sits pinned near
-  -- 100% (a well-tuned reactor keeps it there on purpose), but harmless
-  -- to keep as a secondary number. reactorRunning / flowFEt below are
-  -- the actual production/consumption signal for that situation.
+  -- 100% (a well-tuned power source keeps it there on purpose), but
+  -- harmless to keep as a secondary number. totalFlowFEt / sources below
+  -- are the actual production/consumption signal for that situation.
   local ratePerSec = nil
   local rateUnavailableReason = "warming up"
   if anomaly then
@@ -177,16 +193,26 @@ local function render()
     row = writeLine(row, ("-- FE/s (%s)"):format(rateUnavailableReason), colors.gray)
   end
 
-  if type(last.reactorRunning) == "boolean" then
-    row = writeLine(row, last.reactorRunning and "Reactor: RUNNING" or "Reactor: IDLE",
-      last.reactorRunning and colors.lime or colors.gray)
-  end
+  if type(last.totalFlowFEt) == "number" then
+    row = writeLine(row, "Total: " .. formatFE(last.totalFlowFEt) .. "/t", flowColor(last.totalFlowFEt))
 
-  if type(last.flowFEt) == "number" then
-    local flowColor = colors.gray
-    if last.flowFEt > 0 then flowColor = colors.lime
-    elseif last.flowFEt < 0 then flowColor = colors.orange end
-    row = writeLine(row, formatFE(last.flowFEt) .. "/t", flowColor)
+    -- Skip the breakdown when there's only one source -- Total already
+    -- says the same thing. Cap the list so a growing sources array (more
+    -- generators added later) can't push GUARD/NO SIGNAL off-screen.
+    if type(last.sources) == "table" and #last.sources > 1 then
+      local MAX_SOURCE_LINES = 4
+      for i, source in ipairs(last.sources) do
+        if i > MAX_SOURCE_LINES then
+          row = writeLine(row, ("  +%d more"):format(#last.sources - MAX_SOURCE_LINES), colors.gray)
+          break
+        end
+        if type(source.name) == "string" and type(source.rateFEt) == "number" then
+          row = writeLine(row, "  " .. sourceLabel(source.name) .. ": " .. formatFE(source.rateFEt) .. "/t", flowColor(source.rateFEt))
+        end
+      end
+    end
+  elseif type(last.sources) == "table" and #last.sources == 0 then
+    row = writeLine(row, "No Energy Detector found", colors.gray)
   end
 
   row = row + 1 -- blank before warnings
