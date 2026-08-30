@@ -23,8 +23,9 @@ Pastebin's public API has no "edit an existing paste" endpoint — only create (
 | [`scripts/skeleton.lua`](./scripts/skeleton.lua) | Template | Starting point for a new script: timed tick + event loop, wrapped in `pcall` |
 | [`scripts/sensor-broadcaster.lua`](./scripts/sensor-broadcaster.lua) | Template | Reads a peripheral on an interval, broadcasts the reading over `rednet` |
 | [`scripts/monitor-dashboard.lua`](./scripts/monitor-dashboard.lua) | Template | Listens for a broadcast and renders it on a monitor |
+| [`scripts/powah-ender-cell-dashboard.lua`](./scripts/powah-ender-cell-dashboard.lua) | Ready to use | Live energy dashboard for a POWAH Ender Cell (any tier, incl. Nitro), read via Advanced Peripherals' `ender_cell` peripheral and rendered on a monitor: stored/capacity, fill %, FE/s rate |
 
-Templates are meant to be copied and customized, not run as-is — each one lists what to check before use (peripheral side/name, exact API method names, protocol string).
+Templates are meant to be copied and customized, not run as-is — each one lists what to check before use (peripheral side/name, exact API method names, protocol string). "Ready to use" scripts still discover their peripherals by type at startup and fail with a clear error if something expected isn't attached, rather than assuming a side/slot.
 
 ## Reference doc
 
