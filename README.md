@@ -10,11 +10,7 @@ Each file in [`scripts/`](./scripts) is installed with CC: Tweaked's built-in `w
 wget run https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/<file>.lua
 ```
 
-While a script is still being worked on a feature branch (before it's merged to `main`), swap `main` for that branch name to test the in-progress version:
-
-```
-wget run https://raw.githubusercontent.com/quentinjuarez/atm10/<branch-name>/scripts/<file>.lua
-```
+Everything is pushed straight to `main`, so this URL always serves the current version of a script — no branch name to swap out.
 
 ### Why not Pastebin?
 
