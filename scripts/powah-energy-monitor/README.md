@@ -54,6 +54,14 @@ powah-energy-monitor/
 
 **Consequences.** Simpler code, but the channel numbers are manual coordination points across files instead of something `rednet` would negotiate.
 
+## ADR: every timed cycle wrapped in its OWN `pcall`, not just the script-wide one
+
+**Context.** All three scripts already wrap their whole body in one outer `pcall` so startup failures (missing peripheral, etc.) get logged instead of crashing silently. That's not enough on its own: found the hard way when `energy-detector-broadcaster` worked for one broadcast cycle, then went permanently silent — a single failed peripheral call inside the loop (a detector's block breaking, a wired network flickering, the modem itself detaching for an instant) propagated all the way up through the outer `pcall`, ending the *entire script*. From the dashboard it looked identical to "the computer stopped existing": no more log lines, no more broadcasts, ever, until someone noticed and manually restarted it.
+
+**Decision.** Every recurring unit of work — a sample tick, a broadcast tick, a `peripheral_detach` handler — runs inside its *own* `pcall`, in addition to the outer one. A failure there logs (`SAMPLE ERROR`, `BROADCAST ERROR`, `CYCLE ERROR`, `DETACH HANDLER ERROR`) and the loop continues to its next iteration instead of ending. Timer restarts and accumulator resets happen unconditionally, outside the inner `pcall`, so a failed cycle still leaves the loop in a clean state to try again.
+
+**Consequences.** A transient peripheral hiccup now costs one missed cycle (dashboard sees a brief stale/no-signal blip, then recovers) instead of a permanent outage needing a manual restart. This is the same pattern the dashboard's `safeRender()` already used for render failures — now applied consistently to every computer's per-cycle work, not just display code.
+
 ## ADR: GitHub raw + an installer that writes `startup.lua`, not Pastebin
 
 Same reasoning as the repo root README's "why not Pastebin" section — Pastebin's API can't edit an existing paste, so a GitHub raw URL is the stable link to `wget`. Each computer's `install.lua` (run once) fetches that computer's `startup.lua` and saves it locally under that exact name, since CC:Tweaked auto-runs whatever's named `startup.lua` on boot — you don't need to remember the `wget <url> startup.lua` save-as syntax yourself.

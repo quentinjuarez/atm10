@@ -45,6 +45,16 @@
 -- not every routine transmit. Logs are printed AND appended to LOG_FILE,
 -- so you can check what happened after the fact even without watching
 -- the screen -- e.g. run `edit energy-detector-broadcast.log` in the shell.
+--
+-- RESILIENCE: each sample tick and each broadcast tick runs inside its
+-- OWN pcall, not just the one wrapping the whole script. One outer pcall
+-- alone means any single failed peripheral call anywhere in the loop
+-- (a detector's block breaking, a wired network flickering, the modem
+-- itself detaching for an instant) kills the script permanently -- it
+-- looks like "worked once, then silence" from the dashboard, with
+-- nothing left running to even log why. Per-tick pcalls turn that into
+-- a logged, recoverable hiccup instead: this tick fails, the next one
+-- still runs.
 
 local CHANNEL = 6702
 local KIND = "energy_flow"
@@ -112,7 +122,18 @@ local ok, err = pcall(function()
     local names = findDetectorNames()
     local refreshed = {}
     for _, name in ipairs(names) do
-      refreshed[name] = knownDetectors[name] or peripheral.wrap(name)
+      if knownDetectors[name] then
+        refreshed[name] = knownDetectors[name]
+      else
+        -- peripheral.wrap() can fail for a name that just disappeared
+        -- (block broken between getNames() and here) -- skip it this
+        -- cycle rather than letting that kill the whole broadcaster;
+        -- it'll just be retried on the next refresh.
+        local wrapOk, wrapped = pcall(peripheral.wrap, name)
+        if wrapOk and wrapped then
+          refreshed[name] = wrapped
+        end
+      end
     end
     knownDetectors = refreshed
     return names
@@ -137,47 +158,63 @@ local ok, err = pcall(function()
     local event, id = os.pullEvent("timer")
 
     if id == sampleTimer then
-      for name, d in pairs(knownDetectors) do
-        local readOk, rate = pcall(d.getTransferRate)
-        if readOk and type(rate) == "number" then
-          sampleSum[name] = (sampleSum[name] or 0) + rate
-          sampleCount[name] = (sampleCount[name] or 0) + 1
+      -- Own pcall: a bad read on one detector shouldn't take the timer
+      -- (and every future sample/broadcast) down with it.
+      local sampleOk, sampleErr = pcall(function()
+        for name, d in pairs(knownDetectors) do
+          local readOk, rate = pcall(d.getTransferRate)
+          if readOk and type(rate) == "number" then
+            sampleSum[name] = (sampleSum[name] or 0) + rate
+            sampleCount[name] = (sampleCount[name] or 0) + 1
+          end
         end
+      end)
+      if not sampleOk then
+        log("SAMPLE ERROR: %s", tostring(sampleErr))
       end
       sampleTimer = os.startTimer(SAMPLE_INTERVAL_SECONDS)
 
     elseif id == broadcastTimer then
-      local names = refreshDetectors()
+      -- Own pcall, and the timer restart + accumulator reset below
+      -- happen unconditionally (outside it) -- a failed broadcast this
+      -- second still leaves the loop in a clean state to try again next
+      -- second, instead of getting stuck.
+      local broadcastOk, broadcastErr = pcall(function()
+        local names = refreshDetectors()
 
-      local joined = table.concat(names, ",")
-      if joined ~= lastDetectorNames then
-        log("Energy Detectors changed: now %d (%s)", #names, joined ~= "" and joined or "none")
-        lastDetectorNames = joined
+        local joined = table.concat(names, ",")
+        if joined ~= lastDetectorNames then
+          log("Energy Detectors changed: now %d (%s)", #names, joined ~= "" and joined or "none")
+          lastDetectorNames = joined
+        end
+
+        local sources, totalFlowFEt = {}, 0
+        for _, name in ipairs(names) do
+          local count = sampleCount[name] or 0
+          -- A detector with zero ticks sampled this window (just placed,
+          -- or every read failed) reports 0 rather than being omitted,
+          -- so it still shows up in `sources`.
+          local avg = count > 0 and (sampleSum[name] / count) or 0
+          table.insert(sources, { name = name, rateFEt = avg })
+          totalFlowFEt = totalFlowFEt + avg
+        end
+
+        local active = totalFlowFEt ~= 0
+        if active ~= lastActive then
+          log("Total flow: %s (%.0f FE/t avg)", active and "ACTIVE" or "IDLE", totalFlowFEt)
+          lastActive = active
+        end
+
+        modem.transmit(CHANNEL, CHANNEL, {
+          kind = KIND,
+          t = os.epoch("utc"),
+          sources = sources,
+          totalFlowFEt = totalFlowFEt,
+        })
+      end)
+      if not broadcastOk then
+        log("BROADCAST ERROR: %s", tostring(broadcastErr))
       end
-
-      local sources, totalFlowFEt = {}, 0
-      for _, name in ipairs(names) do
-        local count = sampleCount[name] or 0
-        -- A detector with zero ticks sampled this window (just placed,
-        -- or every read failed) reports 0 rather than being omitted, so
-        -- it still shows up in `sources`.
-        local avg = count > 0 and (sampleSum[name] / count) or 0
-        table.insert(sources, { name = name, rateFEt = avg })
-        totalFlowFEt = totalFlowFEt + avg
-      end
-
-      local active = totalFlowFEt ~= 0
-      if active ~= lastActive then
-        log("Total flow: %s (%.0f FE/t avg)", active and "ACTIVE" or "IDLE", totalFlowFEt)
-        lastActive = active
-      end
-
-      modem.transmit(CHANNEL, CHANNEL, {
-        kind = KIND,
-        t = os.epoch("utc"),
-        sources = sources,
-        totalFlowFEt = totalFlowFEt,
-      })
 
       sampleSum, sampleCount = {}, {}
       broadcastTimer = os.startTimer(BROADCAST_INTERVAL_SECONDS)

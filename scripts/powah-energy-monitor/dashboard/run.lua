@@ -406,11 +406,19 @@ local ok, err = pcall(function()
       safeRender()
       redrawTimer = os.startTimer(REDRAW_SECONDS)
     elseif event == "peripheral_detach" then
-      log("PERIPHERAL DETACHED")
-      monitor.clear()
-      monitor.setCursorPos(1, 1)
-      monitor.setTextColor(colors.red)
-      monitor.write("Peripheral disconnected")
+      log("PERIPHERAL DETACHED: %s", tostring(sideOrTimerId))
+      -- If it's the monitor itself that detached, these calls would
+      -- throw on a now-invalid reference -- pcall so that doesn't take
+      -- the whole listening loop down with it.
+      local detachOk, detachErr = pcall(function()
+        monitor.clear()
+        monitor.setCursorPos(1, 1)
+        monitor.setTextColor(colors.red)
+        monitor.write("Peripheral disconnected")
+      end)
+      if not detachOk then
+        log("DETACH HANDLER ERROR: %s", tostring(detachErr))
+      end
     end
   end
 end)

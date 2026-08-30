@@ -145,21 +145,31 @@ local ok, err = pcall(function()
     local readOk, energy, maxEnergy = pcall(readCell)
 
     if readOk then
-      modem.transmit(CHANNEL, CHANNEL, {
-        kind = KIND,
-        t = os.epoch("utc"),
-        energy = energy,
-        maxEnergy = maxEnergy,
-      })
+      -- Own pcall: modem.transmit() can fail too (modem detached for an
+      -- instant, e.g.) -- without this, that single failure would kill
+      -- the whole broadcaster permanently instead of just skipping a
+      -- cycle. See ../README.md's "every timed cycle wrapped in its own
+      -- pcall" ADR.
+      local cycleOk, cycleErr = pcall(function()
+        modem.transmit(CHANNEL, CHANNEL, {
+          kind = KIND,
+          t = os.epoch("utc"),
+          energy = energy,
+          maxEnergy = maxEnergy,
+        })
 
-      local anomaly = detectAnomaly(energy, maxEnergy)
-      if anomaly ~= lastAnomaly then
-        if anomaly then
-          log("GUARD: %s (energy=%s, maxEnergy=%s)", anomaly, tostring(energy), tostring(maxEnergy))
-        else
-          log("GUARD: reading back to normal (energy=%s, maxEnergy=%s)", tostring(energy), tostring(maxEnergy))
+        local anomaly = detectAnomaly(energy, maxEnergy)
+        if anomaly ~= lastAnomaly then
+          if anomaly then
+            log("GUARD: %s (energy=%s, maxEnergy=%s)", anomaly, tostring(energy), tostring(maxEnergy))
+          else
+            log("GUARD: reading back to normal (energy=%s, maxEnergy=%s)", tostring(energy), tostring(maxEnergy))
+          end
+          lastAnomaly = anomaly
         end
-        lastAnomaly = anomaly
+      end)
+      if not cycleOk then
+        log("CYCLE ERROR: %s", tostring(cycleErr))
       end
     else
       log("READ FAILED: %s", tostring(energy))
