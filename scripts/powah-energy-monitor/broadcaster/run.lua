@@ -2,7 +2,10 @@
 --
 -- Reads a POWAH Ender Cell via a Block Reader (Advanced Peripherals)
 -- facing it, and broadcasts the energy reading over a modem on a fixed
--- channel, for ../dashboard/run.lua to pick up elsewhere.
+-- channel, for ../dashboard/run.lua to pick up elsewhere. Also reports
+-- the Reactor's running state and an Energy Detector's FE/t flow when
+-- those peripherals are found -- both optional, see the note below on
+-- why the Ender Cell level alone can't show consumption.
 --
 -- Don't wget this file directly to install it -- see install.lua in this
 -- same folder, or the repo root README's "Installing a script in-game".
@@ -41,6 +44,17 @@
 -- maxEnergy / an int32-clamp signature, as defense in depth in case
 -- Powah's NBT ever changes shape -- it should never trigger reading raw
 -- NBT longs, but "should never" isn't "can't."
+--
+-- WHY THE ENDER CELL LEVEL CAN'T SHOW CONSUMPTION: a network sized for
+-- 22B FE with a reactor that only turns on below 70% stays pinned at (or
+-- extremely close to) 100% most of the time by design -- the level
+-- barely moves even with real consumption happening, so FE/s computed
+-- from level deltas is nearly always ~0. Flow, not level, is the right
+-- signal: REACTOR_TYPE below (Powah's Reactor, any tier) reports
+-- isRunning() directly, and an optional Energy Detector placed inline on
+-- the reactor's output cable reports real FE/t via getTransferRate().
+-- Both are OPTIONAL -- if the peripheral isn't found, that field is just
+-- left out of the broadcast and the dashboard skips it.
 
 local CHANNEL = 6060
 local INTERVAL_SECONDS = 1
@@ -51,6 +65,13 @@ local INT32_MAX = 2147483647
 -- Confirmed via ../debug-block-reader.lua against a powah:ender_cell_nitro.
 local ENERGY_FIELD = "energy_stored_main_energy"
 local CAPACITY_FIELD = "energy_capacity_main_energy"
+
+-- Optional peripherals -- see docs.advanced-peripherals.de integrations
+-- for Powah's Reactor (any tier, incl. Nitro) and the core Energy
+-- Detector peripheral. Neither is required for the Ender Cell reading
+-- above to keep working.
+local REACTOR_TYPE = "uraninite_reactor"
+local ENERGY_DETECTOR_TYPE = "energy_detector" -- "energyDetector" pre-1.21.1
 
 -- Returns a short problem description, or nil if the reading looks sane.
 local function detectAnomaly(energy, maxEnergy)
@@ -108,6 +129,22 @@ local ok, err = pcall(function()
     error("no modem peripheral found -- attach a Wireless or Ender Modem to this computer", 0)
   end
 
+  -- Optional: neither missing peripheral is an error, they just won't
+  -- be in the broadcast until they're attached.
+  local reactor = peripheral.find(REACTOR_TYPE)
+  local detector = peripheral.find(ENERGY_DETECTOR_TYPE)
+  log("Reactor (%s): %s", REACTOR_TYPE, reactor and "found" or "not found, skipping")
+  log("Energy Detector (%s): %s", ENERGY_DETECTOR_TYPE, detector and "found" or "not found, skipping")
+
+  -- Returns the value from fn(peripheralRef), or nil if the peripheral
+  -- is absent or the call errors -- optional data is never fatal.
+  local function readOptional(peripheralRef, fn)
+    if not peripheralRef then return nil end
+    local readOptOk, result = pcall(fn, peripheralRef)
+    if readOptOk then return result end
+    return nil
+  end
+
   -- Reads the two fields, with clear errors for every way this can go
   -- wrong: reader facing nothing, facing the wrong block, or Powah
   -- having renamed its NBT fields since ../debug-block-reader.lua ran.
@@ -135,16 +172,33 @@ local ok, err = pcall(function()
     log("GUARD: %s (energy=%s, maxEnergy=%s)", startupAnomaly, tostring(probeEnergy), tostring(probeMax))
   end
   local lastAnomaly = startupAnomaly
+  local lastReactorRunning = nil
 
   while true do
     local readOk, energy, maxEnergy = pcall(readCell)
 
     if readOk then
-      modem.transmit(CHANNEL, CHANNEL, {
+      local payload = {
         t = os.epoch("utc"),
         energy = energy,
         maxEnergy = maxEnergy,
-      })
+      }
+
+      local reactorRunning = readOptional(reactor, function(r) return r.isRunning() end)
+      if type(reactorRunning) == "boolean" then
+        payload.reactorRunning = reactorRunning
+        if reactorRunning ~= lastReactorRunning then
+          log("Reactor state: %s", reactorRunning and "RUNNING" or "IDLE")
+          lastReactorRunning = reactorRunning
+        end
+      end
+
+      local flowFEt = readOptional(detector, function(d) return d.getTransferRate() end)
+      if type(flowFEt) == "number" then
+        payload.flowFEt = flowFEt
+      end
+
+      modem.transmit(CHANNEL, CHANNEL, payload)
 
       local anomaly = detectAnomaly(energy, maxEnergy)
       if anomaly ~= lastAnomaly then

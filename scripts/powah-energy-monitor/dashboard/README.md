@@ -17,6 +17,14 @@ wget run https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/powa
 
 Then `reboot` to activate `startup.lua`. To test a change without rebooting: `wget run https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/powah-energy-monitor/dashboard/run.lua`.
 
+## ADR: dynamic row layout, and optional Reactor/flow lines
+
+**Context.** Once the broadcaster started optionally sending `reactorRunning` and `flowFEt` (see `../broadcaster/README.md`), hard-coded row numbers for everything below the bar would either collide or leave gaps depending on which optional fields showed up in a given payload.
+
+**Decision.** `render()` uses a `row` cursor (`writeLine()` returns the next free row) instead of fixed `monitor.setCursorPos(1, <n>)` calls. Reactor state and flow only take a line when `last.reactorRunning`/`last.flowFEt` are actually present; everything after them (blank line, `GUARD:`, `NO SIGNAL`) shifts automatically.
+
+**Consequences.** Works identically whether 0, 1, or both optional peripherals are attached — no dashboard change needed as you add an Energy Detector or Reactor link later. Worst case (guard *and* stale *and* both optional lines) is 13 rows, still comfortably inside the 24-row recommendation below.
+
 ## ADR: rate calculated from the broadcaster's timestamps, not receipt time
 
 **Decision.** Each payload carries `t = os.epoch("utc")` set by the broadcaster at read time; FE/s is computed from consecutive `t`/`energy` pairs, not from when this computer happened to receive them.

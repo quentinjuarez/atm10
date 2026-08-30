@@ -8,6 +8,8 @@ Reads the Ender Cell, transmits on `CHANNEL`. See [`../README.md`](../README.md)
 - **Modem** on any other free side of this computer — no cable needed, it talks over the air:
   - **Wireless Modem** if the dashboard is in the same base/render distance.
   - **Ender Modem** if it's far away or in another dimension — unlimited range, costs more to craft.
+- **Optional — Reactor state:** if a Powah Reactor (any tier) is reachable as a peripheral (adjacent, or on the same wired network), its `isRunning()` state is broadcast automatically. Nothing extra to place — just needs to be network-reachable like the Ender Cell.
+- **Optional — flow rate:** place an Advanced Peripherals **Energy Detector** inline on the cable between the Reactor's output and the network (i.e. the cable itself passes *through* the detector block) to get real FE/t. If it isn't present, `run.lua` just skips that field — nothing else breaks.
 
 ## Install
 
@@ -24,6 +26,14 @@ Then `reboot` to activate `startup.lua`. To test a change without rebooting: `wg
 **Decision.** Read the tile entity's raw NBT instead, via Advanced Peripherals' **Block Reader** peripheral (`getBlockData()`), which isn't limited to a 32-bit int. `../debug-block-reader.lua`'s dump against this exact block confirmed the field names: `energy_stored_main_energy` and `energy_capacity_main_energy` (the two `ENERGY_FIELD`/`CAPACITY_FIELD` constants at the top of `run.lua`) — not guessed, read directly off a live dump.
 
 **Consequences.** No clamp regardless of network size. But this is now coupled to Powah's internal NBT schema, which isn't publicly documented and could change on a Powah/Advanced Peripherals update — if `run.lua` starts erroring with "NBT is missing '...' as numbers", re-run `../debug-block-reader.lua` and update the two field-name constants.
+
+## ADR: report flow (Reactor state + Energy Detector), not just level
+
+**Context.** A network sized well above actual consumption, with a reactor tuned to keep it topped up (this world: only runs below 70%), sits pinned at ~100% almost permanently by design. `energy`/`maxEnergy` barely move even with real consumption happening underneath — level is fundamentally the wrong signal to read "how much power is being used" once storage is oversized relative to draw. This showed up directly: the dashboard kept reading `22B/22B` with no visible change.
+
+**Decision.** Broadcast two additional, **optional** fields when their peripherals are reachable: `reactorRunning` (Powah Reactor's `isRunning()`, type `uraninite_reactor`) and `flowFEt` (Energy Detector's `getTransferRate()`, type `energy_detector` in 1.21.1+, `energyDetector` before). Neither is required — `readOptional()` returns `nil` and the field is simply left out of the payload if the peripheral isn't found or errors, so the Ender Cell reading keeps working with or without them.
+
+**Consequences.** `flowFEt` only reflects whatever single cable the detector sits on — placed between the Reactor and the network, it shows *production* while the reactor runs, not necessarily every consumer's draw everywhere. For a fuller picture (e.g. multiple separate consumer branches), a second Energy Detector on the consumer side would need its own broadcast field — not built yet, ask if that's needed.
 
 ## ADR: 1-second broadcast interval
 

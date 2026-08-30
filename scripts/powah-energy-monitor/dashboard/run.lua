@@ -2,7 +2,11 @@
 --
 -- Energy dashboard that RECEIVES readings broadcast by
 -- ../broadcaster/run.lua over a modem, and renders stored energy,
--- capacity, fill %, and a live FE/s rate on a wrapped monitor.
+-- capacity, fill %, and a live FE/s rate on a wrapped monitor -- plus,
+-- when the broadcaster finds them, the Reactor's running state and the
+-- Energy Detector's FE/t flow, which is the actual production/
+-- consumption signal once the network sits pinned near 100% (see
+-- ../README.md for why level alone can't show that).
 --
 -- Don't wget this file directly to install it -- see install.lua in this
 -- same folder, or the repo root README's "Installing a script in-game".
@@ -119,17 +123,23 @@ local last = nil       -- most recent payload received {t, energy, maxEnergy}
 local previous = nil    -- payload before that, for rate calc
 local lastReceivedAt = nil -- os.epoch("utc") of last received message
 
+-- Writes one line and advances past it -- used so optional fields
+-- (reactor state, flow rate) can be present or absent without every
+-- other line's row number needing to shift to compensate.
+local function writeLine(row, text, color)
+  monitor.setCursorPos(1, row)
+  monitor.setTextColor(color or colors.white)
+  monitor.write(text)
+  return row + 1
+end
+
 local function render()
   monitor.setBackgroundColor(colors.black)
   monitor.clear()
-  monitor.setTextColor(colors.white)
 
   if not last then
-    monitor.setCursorPos(1, 1)
-    monitor.write("POWAH Ender Cell")
-    monitor.setCursorPos(1, 3)
-    monitor.setTextColor(colors.gray)
-    monitor.write(("Waiting for signal on ch. %d..."):format(CHANNEL))
+    writeLine(1, "POWAH Ender Cell")
+    writeLine(3, ("Waiting for signal on ch. %d..."):format(CHANNEL), colors.gray)
     return
   end
 
@@ -137,6 +147,10 @@ local function render()
   local anomaly = detectAnomaly(energy, maxEnergy)
   local pct = maxEnergy > 0 and (energy / maxEnergy * 100) or 0
 
+  -- Level-based rate: near-useless once the network sits pinned near
+  -- 100% (a well-tuned reactor keeps it there on purpose), but harmless
+  -- to keep as a secondary number. reactorRunning / flowFEt below are
+  -- the actual production/consumption signal for that situation.
   local ratePerSec = nil
   local rateUnavailableReason = "warming up"
   if anomaly then
@@ -145,42 +159,45 @@ local function render()
     ratePerSec = (last.energy - previous.energy) / ((last.t - previous.t) / 1000)
   end
 
-  monitor.setCursorPos(1, 1)
-  monitor.write("POWAH Ender Cell")
+  local row = 1
+  row = writeLine(row, "POWAH Ender Cell")
+  row = row + 1 -- blank
 
-  monitor.setCursorPos(1, 3)
-  monitor.write(formatFE(energy) .. " / " .. formatFE(maxEnergy))
-
-  monitor.setCursorPos(1, 4)
-  if anomaly then
-    monitor.write(string.format("%.1f%%+ (min)", pct)) -- actual % may be higher, see guard
-  else
-    monitor.write(string.format("%.1f%%", pct))
-  end
+  row = writeLine(row, formatFE(energy) .. " / " .. formatFE(maxEnergy))
+  row = writeLine(row, anomaly and string.format("%.1f%%+ (min)", pct) or string.format("%.1f%%", pct))
+  row = row + 1 -- blank
 
   local w = select(1, monitor.getSize())
-  drawBar(1, 6, math.max(w - 2, 10), pct, barColor(pct))
+  drawBar(1, row, math.max(w - 2, 10), pct, barColor(pct))
+  row = row + 2 -- bar row + blank
 
-  monitor.setCursorPos(1, 8)
   if ratePerSec then
-    monitor.setTextColor(ratePerSec >= 0 and colors.lime or colors.orange)
-    monitor.write(string.format("%s/s", formatFE(ratePerSec)))
+    row = writeLine(row, string.format("%s/s", formatFE(ratePerSec)), ratePerSec >= 0 and colors.lime or colors.orange)
   else
-    monitor.setTextColor(colors.gray)
-    monitor.write(("-- FE/s (%s)"):format(rateUnavailableReason))
+    row = writeLine(row, ("-- FE/s (%s)"):format(rateUnavailableReason), colors.gray)
   end
 
+  if type(last.reactorRunning) == "boolean" then
+    row = writeLine(row, last.reactorRunning and "Reactor: RUNNING" or "Reactor: IDLE",
+      last.reactorRunning and colors.lime or colors.gray)
+  end
+
+  if type(last.flowFEt) == "number" then
+    local flowColor = colors.gray
+    if last.flowFEt > 0 then flowColor = colors.lime
+    elseif last.flowFEt < 0 then flowColor = colors.orange end
+    row = writeLine(row, formatFE(last.flowFEt) .. "/t", flowColor)
+  end
+
+  row = row + 1 -- blank before warnings
+
   if anomaly then
-    monitor.setCursorPos(1, 10)
-    monitor.setTextColor(colors.red)
-    monitor.write("GUARD: " .. anomaly)
+    row = writeLine(row, "GUARD: " .. anomaly, colors.red)
   end
 
   local staleSeconds = (os.epoch("utc") - lastReceivedAt) / 1000
   if staleSeconds > STALE_AFTER_SECONDS then
-    monitor.setCursorPos(1, anomaly and 12 or 10)
-    monitor.setTextColor(colors.red)
-    monitor.write(string.format("NO SIGNAL (%ds ago)", math.floor(staleSeconds)))
+    row = writeLine(row, string.format("NO SIGNAL (%ds ago)", math.floor(staleSeconds)), colors.red)
   end
 end
 
