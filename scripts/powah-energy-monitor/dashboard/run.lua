@@ -47,19 +47,20 @@
 -- per character cell -- see this folder's README.md ADR for both, with
 -- the reasoning and the actual call-count difference.
 --
--- LOOK: header band, gradient "fuel gauge" bar, and the graph's half-block
--- 2x vertical resolution all use CP437 block/shade characters (the same
--- extended-ASCII range CC:Tweaked's font has supported since classic
--- ComputerCraft) -- see this folder's README.md's "gauge and half-block
--- graph" ADR for why these specific characters and how they stay cheap
--- in monitor calls.
+-- LOOK: an earlier version drew the header/bar/graph with CP437 block and
+-- shade characters -- looked wrong on the actual in-game font, reverted.
+-- Everything visual here is now plain ASCII text plus monitor background
+-- COLOR fills (a colored space always renders as a solid block on any
+-- font/resource pack -- a specific character glyph doesn't). See this
+-- folder's README.md's ADRs for the graph's line+area look and its
+-- time-based continuity.
 
 -- Bumped by hand whenever this file changes, logged at READY -- since
 -- `wget run` never saves this file to disk, there's no local mtime to
 -- check; this is the only way to confirm from the terminal/log alone
 -- that a reboot actually picked up the latest push instead of an old
 -- fetch, without re-running anything by hand.
-local SCRIPT_VERSION = "2026-08-31.2"
+local SCRIPT_VERSION = "2026-08-31.3"
 
 local CELL_CHANNEL = 6701
 local FLOW_CHANNEL = 6702
@@ -148,21 +149,6 @@ end
 
 local monitor -- assigned once peripheral discovery succeeds, below
 
--- CP437 block/shade characters -- the same extended-ASCII range
--- CC:Tweaked's font has rendered since classic ComputerCraft, commonly
--- used across CC community UIs for exactly this kind of thing. Kept to
--- this one well-established range (no box-drawing corners, no 1-31
--- control-range glyphs) since there's no way to screenshot the in-game
--- result from here to confirm a riskier glyph renders as expected --
--- these are safe bets.
-local CH = {
-  block      = string.char(219), -- full block: bar/gauge fill
-  halfTop    = string.char(223), -- upper-half block: graph sub-pixel
-  shadeLight = string.char(176), -- dim dotted texture: empty gauge track
-  shadeDark  = string.char(178), -- section-label flourish
-  hLine      = string.char(196), -- header divider
-}
-
 local function centerText(text, width)
   if #text >= width then return text:sub(1, width) end
   return string.rep(" ", math.floor((width - #text) / 2)) .. text
@@ -201,108 +187,139 @@ local function bandColorAt(colPct)
 end
 
 -- "Fuel gauge" bar: filled portion colored by track position
--- (bandColorAt), empty portion drawn as a dim dotted texture
--- (shadeLight) instead of flat black, so an empty/low bar still reads as
--- "a gauge" rather than "nothing drawn". Same same-appearance-run
--- batching as drawGraph below -- at most 5 fill runs + 1 empty run per
--- row, not one call per column.
+-- (bandColorAt), empty portion a dim gray -- both plain background-color
+-- fills, no character glyphs (a colored space always renders as a solid
+-- block regardless of font/resource pack; a specific glyph doesn't --
+-- see the top-of-file LOOK note for why that distinction matters here).
+-- Drawn as same-color RUNS -- at most 5 fill runs + 1 empty run per row,
+-- not one monitor call per column.
 local function drawGradientBar(x, y, width, height, pct)
   local filled = math.floor(width * math.min(math.max(pct, 0), 100) / 100)
   for dy = 0, height - 1 do
     local rowY = y + dy
-    local runStart, runColor, runChar = 1, nil, nil
+    local runStart, runColor = 1, nil
     for col = 1, width + 1 do
-      local color, char
+      local color = nil
       if col <= filled then
-        color, char = bandColorAt(col / width * 100), CH.block
+        color = bandColorAt(col / width * 100)
       elseif col <= width then
-        color, char = colors.gray, CH.shadeLight
+        color = colors.gray
       end
-      if col > width or color ~= runColor or char ~= runChar then
+      if color ~= runColor then
         if runColor then
           monitor.setCursorPos(x + runStart - 1, rowY)
-          monitor.setTextColor(runColor)
-          monitor.write(string.rep(runChar, col - runStart))
+          monitor.setBackgroundColor(runColor)
+          monitor.write(string.rep(" ", col - runStart))
         end
-        runStart, runColor, runChar = col, color, char
-      end
-    end
-  end
-  monitor.setTextColor(colors.white)
-end
-
--- Rolling bar-chart of `history` ({t=, value=}, oldest first), newest
--- sample at the rightmost column, scaled between minV/maxV. TWO sub-rows
--- of vertical resolution per terminal row, via the ▀ (upper-half-block)
--- character: one cell can show two independently-colored half-height
--- pixels (foreground = top half, background = bottom half) instead of
--- one flat-colored cell, so a bar's top edge lands on the nearest
--- half-row instead of the nearest whole row -- noticeably smoother on a
--- short graph without costing extra monitor rows. Column heights/colors
--- are precomputed once (pure Lua, no peripheral calls), then each
--- terminal row is drawn as same-appearance RUNS -- one setCursorPos +
--- color set(s) + write per contiguous run of matching (top, bottom)
--- pair, not one per column. See this folder's README.md ADR.
-local function drawGraph(x, yTop, width, height, history, minV, maxV)
-  local n = #history
-  local range = maxV - minV
-  local subHeight = height * 2 -- two half-rows per terminal row
-
-  local barSubHeights, colColors = {}, {}
-  for col = 1, width do
-    local idx = n - width + col
-    if idx >= 1 and idx <= n then
-      local v = history[idx].value
-      colColors[col] = flowColor(v)
-      local barH
-      if range > 0 then
-        barH = math.floor((v - minV) / range * subHeight + 0.5)
-      else
-        barH = math.floor(subHeight / 2)
-      end
-      barSubHeights[col] = math.max(0, math.min(subHeight, barH))
-    else
-      colColors[col] = colors.black
-      barSubHeights[col] = 0
-    end
-  end
-
-  for row = 0, height - 1 do
-    local y = yTop + row
-    -- Sub-row indices for this terminal row, counted from the bottom of
-    -- the whole graph (0 = bottommost half-row, subHeight-1 = topmost).
-    local bottomSub = (height - 1 - row) * 2
-    local topSub = bottomSub + 1
-
-    local runStart, runTop, runBottom = 1, nil, nil
-    for col = 1, width + 1 do
-      local topColor, bottomColor
-      if col <= width then
-        local barH = barSubHeights[col]
-        topColor = (barH > topSub) and colColors[col] or colors.black
-        bottomColor = (barH > bottomSub) and colColors[col] or colors.black
-      end
-      if col > width or topColor ~= runTop or bottomColor ~= runBottom then
-        if runTop then
-          monitor.setCursorPos(x + runStart - 1, y)
-          if runTop == runBottom then
-            -- Both halves the same color (often both black/empty) -- a
-            -- plain colored space reads identically and skips a color
-            -- switch the half-block character would otherwise need.
-            monitor.setBackgroundColor(runTop)
-            monitor.write(string.rep(" ", col - runStart))
-          else
-            monitor.setTextColor(runTop)
-            monitor.setBackgroundColor(runBottom)
-            monitor.write(string.rep(CH.halfTop, col - runStart))
-          end
-        end
-        runStart, runTop, runBottom = col, topColor, bottomColor
+        runStart, runColor = col, color
       end
     end
   end
   monitor.setBackgroundColor(colors.black)
-  monitor.setTextColor(colors.white)
+end
+
+-- Linear-interpolated value of `history` ({t=, value=}, oldest first,
+-- time-ordered) at time `t`. nil if `t` predates the first sample
+-- (genuinely no data yet, e.g. right after reboot); holds the last known
+-- value flat for `t` at/after the newest sample -- same as a real
+-- trading chart between ticks. This is what makes a dropped broadcast (a
+-- missed second from a server hiccup) invisible in the graph instead of
+-- a gap: the line is sampled across a fixed TIME axis, not packed one
+-- column per received message -- see this folder's README.md's
+-- continuity ADR.
+local function valueAt(history, t)
+  local n = #history
+  if n == 0 or t < history[1].t then return nil end
+  if t >= history[n].t then return history[n].value end
+  local lo, hi = 1, n
+  while hi - lo > 1 do
+    local mid = math.floor((lo + hi) / 2)
+    if history[mid].t <= t then lo = mid else hi = mid end
+  end
+  local a, b = history[lo], history[hi]
+  if b.t == a.t then return b.value end
+  return a.value + (b.value - a.value) * (t - a.t) / (b.t - a.t)
+end
+
+-- Continuous line + area, trading-chart style: one accent line tracing
+-- the value over TIME (not one bar per received sample) with a dim gray
+-- fill beneath it, colored by the latest value (flowColor: lime
+-- producing, orange draining, gray idle) -- see this folder's README.md
+-- ADR for why a single line beats per-column coloring here. Column
+-- values come from valueAt() above, sampled evenly across a fixed
+-- window ending "now" so the line keeps moving even if the last
+-- broadcast is a moment stale (held flat, same as the real thing). A
+-- vertical connector between each column and the previous one turns
+-- isolated points into a continuous line even where the value jumps a
+-- lot between two samples. Heights are precomputed once in plain Lua,
+-- then each terminal row draws as same-color RUNS, same batching this
+-- file has used throughout. Scaled between minV/maxV (the current
+-- hour's running min/max, passed in by the caller) rather than this
+-- frame's own visible-window min/max, so the vertical scale stays
+-- stable instead of jumping every redraw -- unchanged from the earlier
+-- version, see this folder's README.md's original graph-scale ADR.
+local function drawGraph(x, yTop, width, height, history, windowMs, minV, maxV)
+  local now = os.epoch("utc")
+  local range = maxV - minV
+  local lineColor = flowColor(history[#history] and history[#history].value or 0)
+
+  -- lineRow[col]: row-from-bottom (0..height-1) the line passes through
+  -- at that column's sampled time, or nil where there's no data yet.
+  local lineRow = {}
+  for col = 1, width do
+    local t = now - windowMs * (width - col) / width
+    local v = valueAt(history, t)
+    if v then
+      local rowFromBottom
+      if range > 0 then
+        rowFromBottom = math.floor((v - minV) / range * (height - 1) + 0.5)
+      else
+        rowFromBottom = math.floor((height - 1) / 2)
+      end
+      lineRow[col] = math.max(0, math.min(height - 1, rowFromBottom))
+    end
+  end
+
+  -- connLow/connHigh: the row RANGE a column shades as "the line",
+  -- spanning from the previous column's row to this one's -- a straight
+  -- connector, not an isolated dot per column.
+  local connLow, connHigh = {}, {}
+  local prevRow = nil
+  for col = 1, width do
+    if lineRow[col] then
+      local lo, hi = lineRow[col], lineRow[col]
+      if prevRow then lo, hi = math.min(lo, prevRow), math.max(hi, prevRow) end
+      connLow[col], connHigh[col] = lo, hi
+      prevRow = lineRow[col]
+    else
+      prevRow = nil
+    end
+  end
+
+  for row = 0, height - 1 do
+    local fromBottom = height - 1 - row
+    local y = yTop + row
+    local runStart, runColor = 1, nil
+    for col = 1, width + 1 do
+      local color = nil
+      if col <= width and lineRow[col] then
+        if fromBottom >= connLow[col] and fromBottom <= connHigh[col] then
+          color = lineColor
+        elseif fromBottom < connLow[col] then
+          color = colors.gray -- area fill under the line
+        end
+      end
+      if color ~= runColor then
+        if runColor then
+          monitor.setCursorPos(x + runStart - 1, y)
+          monitor.setBackgroundColor(runColor)
+          monitor.write(string.rep(" ", col - runStart))
+        end
+        runStart, runColor = col, color
+      end
+    end
+  end
+  monitor.setBackgroundColor(colors.black)
 end
 
 -- ---------------------------------------------------------------------
@@ -349,12 +366,12 @@ local function render()
   monitor.setCursorPos(1, 1)
   monitor.write(string.rep(" ", w))
   monitor.setCursorPos(1, 1)
-  monitor.write(centerText(CH.shadeDark .. CH.shadeDark .. " POWAH ENERGY GRID " .. CH.shadeDark .. CH.shadeDark, w))
+  monitor.write(centerText("POWAH ENERGY GRID", w))
   monitor.setBackgroundColor(colors.black)
 
   monitor.setCursorPos(1, 2)
   monitor.setTextColor(colors.gray)
-  monitor.write(string.rep(CH.hLine, w))
+  monitor.write(string.rep("-", w))
 
   local clock = os.date("%H:%M:%S")
   if w >= #clock + 3 then
@@ -368,7 +385,7 @@ local function render()
   local row = 4
 
   -- ---- Storage level (CELL_CHANNEL, kind="ender_cell") ---------------
-  row = writeLine(row, CH.shadeDark .. " STORAGE", colors.cyan)
+  row = writeLine(row, "STORAGE", colors.cyan)
   if not lastCell then
     row = writeLine(row, ("  Waiting for cell signal (ch. %d)..."):format(CELL_CHANNEL), colors.gray)
     row = row + 1
@@ -399,7 +416,7 @@ local function render()
   row = row + 1 -- blank between the two sections
 
   -- ---- Flow (FLOW_CHANNEL, kind="energy_flow") ------------------------
-  row = writeLine(row, CH.shadeDark .. " FLOW", colors.lightBlue)
+  row = writeLine(row, "FLOW", colors.lightBlue)
   if not lastFlow then
     row = writeLine(row, ("  Waiting for flow signal (ch. %d)..."):format(FLOW_CHANNEL), colors.gray)
     row = row + 1
@@ -452,7 +469,7 @@ local function render()
   if #flowHistory > 0 and hourMin and hourMax then
     local graphHeight = h - row
     if graphHeight >= 3 then
-      drawGraph(1, row, w, graphHeight, flowHistory, hourMin, hourMax)
+      drawGraph(1, row, w, graphHeight, flowHistory, FLOW_HISTORY_SECONDS * 1000, hourMin, hourMax)
     end
   end
 end
