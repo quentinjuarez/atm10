@@ -47,20 +47,23 @@
 -- per character cell -- see this folder's README.md ADR for both, with
 -- the reasoning and the actual call-count difference.
 --
--- LOOK: an earlier version drew the header/bar/graph with CP437 block and
--- shade characters -- looked wrong on the actual in-game font, reverted.
--- Everything visual here is now plain ASCII text plus monitor background
--- COLOR fills (a colored space always renders as a solid block on any
--- font/resource pack -- a specific character glyph doesn't). See this
--- folder's README.md's ADRs for the graph's line+area look and its
--- time-based continuity.
+-- LOOK: steampunk copper/brass theme, picked to match the build this
+-- runs in. No header/title band -- flow (FE/t) is the number that
+-- matters most, shown first and alone on its line; storage is secondary
+-- and compact; the graph is dominant, a plain line (no fill) over a
+-- light reference grid, with min/max shown as small corner labels
+-- instead of a separate text row. All plain ASCII + monitor background
+-- COLOR fills, no character glyphs -- an earlier version tried CP437
+-- block/shade characters and they rendered wrong in-game, so nothing
+-- here depends on font glyphs rendering a specific way. See this
+-- folder's README.md's ADRs for the layout and graph decisions.
 
 -- Bumped by hand whenever this file changes, logged at READY -- since
 -- `wget run` never saves this file to disk, there's no local mtime to
 -- check; this is the only way to confirm from the terminal/log alone
 -- that a reboot actually picked up the latest push instead of an old
 -- fetch, without re-running anything by hand.
-local SCRIPT_VERSION = "2026-08-31.3"
+local SCRIPT_VERSION = "2026-08-31.4"
 
 local CELL_CHANNEL = 6701
 local FLOW_CHANNEL = 6702
@@ -74,8 +77,12 @@ local TEXT_SCALE = 1 -- bigger/more readable than the default 0.5; trades width
 local INT32_MAX = 2147483647
 
 local CONFIG = {
-  warn_below_pct = 25, -- draw the bar red below this
-  ok_below_pct = 75,   -- yellow between warn and ok, green above
+  warn_below_pct = 25, -- pct number shows red below this
+  ok_below_pct = 75,   -- yellow between warn and ok, green above -- the
+                        -- storage BAR itself is a uniform brass gauge
+                        -- (no red/yellow/green banding) per this folder's
+                        -- README.md ADR; these thresholds only color the
+                        -- pct text now.
 }
 
 -- Returns a short problem description, or nil if the reading looks sane.
@@ -132,11 +139,14 @@ local function formatFE(n)
   return string.format("%s%d FE", sign, math.floor(n + 0.5))
 end
 
--- Colors a flow number: lime producing, orange draining, gray idle/zero.
+-- Colors a flow number: copper/brass palette to match the steampunk
+-- build this runs in -- orange producing (the boiler's running), red
+-- draining (reserves going down, the one state worth flagging), brown
+-- idle/zero (dim, nothing happening).
 local function flowColor(rateFEt)
-  if rateFEt > 0 then return colors.lime end
-  if rateFEt < 0 then return colors.orange end
-  return colors.gray
+  if rateFEt > 0 then return colors.orange end
+  if rateFEt < 0 then return colors.red end
+  return colors.brown
 end
 
 -- "energy_detector_0" -> "src 0" -- CC:Tweaked auto-assigns these names
@@ -149,70 +159,36 @@ end
 
 local monitor -- assigned once peripheral discovery succeeds, below
 
-local function centerText(text, width)
-  if #text >= width then return text:sub(1, width) end
-  return string.rep(" ", math.floor((width - #text) / 2)) .. text
-end
-
--- Pct number / state coloring -- driven by CONFIG's thresholds, "what
--- state am I in" semantics. Kept separate from the bar's own coloring
--- below (bandColorAt), which is purely decorative and independent of
--- these thresholds -- see this folder's README.md ADR for why they're
--- two different color functions now instead of one.
+-- Pct number coloring -- driven by CONFIG's thresholds, "what state am I
+-- in" semantics. The bar itself (drawGradientBar below) is a uniform
+-- brass gauge with no threshold banding -- this is the only place that
+-- alert coloring still shows for storage level, other than GUARD/NO
+-- SIGNAL text. See this folder's README.md ADR.
 local function statusColor(pct)
   if pct < CONFIG.warn_below_pct then return colors.red end
   if pct < CONFIG.ok_below_pct then return colors.yellow end
   return colors.green
 end
 
--- Fixed red-to-green bands by POSITION along the bar, not by the current
--- pct -- same idea as a car's fuel gauge, which is always red-at-empty,
--- green-at-full regardless of where the needle sits. Five bands, not a
--- true per-pixel blend, so the fill still draws as a handful of
--- same-color runs (see drawGradientBar below) instead of one monitor
--- call per column.
-local GRADIENT_BANDS = {
-  { limit = 20,  color = colors.red },
-  { limit = 40,  color = colors.orange },
-  { limit = 60,  color = colors.yellow },
-  { limit = 80,  color = colors.lime },
-  { limit = 100, color = colors.green },
-}
-
-local function bandColorAt(colPct)
-  for _, band in ipairs(GRADIENT_BANDS) do
-    if colPct <= band.limit then return band.color end
-  end
-  return colors.green
-end
-
--- "Fuel gauge" bar: filled portion colored by track position
--- (bandColorAt), empty portion a dim gray -- both plain background-color
--- fills, no character glyphs (a colored space always renders as a solid
--- block regardless of font/resource pack; a specific glyph doesn't --
--- see the top-of-file LOOK note for why that distinction matters here).
--- Drawn as same-color RUNS -- at most 5 fill runs + 1 empty run per row,
--- not one monitor call per column.
+-- Uniform brass/copper gauge -- filled portion one solid color
+-- (colors.orange), empty portion a dim brown track, no red/yellow/green
+-- banding (that would clash with the steampunk theme this dashboard
+-- sits in -- see this folder's README.md ADR). Plain background-color
+-- fills, no character glyphs. Drawn as same-color RUNS -- 2 monitor
+-- calls per row (fill + track), not one per column.
 local function drawGradientBar(x, y, width, height, pct)
   local filled = math.floor(width * math.min(math.max(pct, 0), 100) / 100)
   for dy = 0, height - 1 do
     local rowY = y + dy
-    local runStart, runColor = 1, nil
-    for col = 1, width + 1 do
-      local color = nil
-      if col <= filled then
-        color = bandColorAt(col / width * 100)
-      elseif col <= width then
-        color = colors.gray
-      end
-      if color ~= runColor then
-        if runColor then
-          monitor.setCursorPos(x + runStart - 1, rowY)
-          monitor.setBackgroundColor(runColor)
-          monitor.write(string.rep(" ", col - runStart))
-        end
-        runStart, runColor = col, color
-      end
+    if filled > 0 then
+      monitor.setCursorPos(x, rowY)
+      monitor.setBackgroundColor(colors.orange)
+      monitor.write(string.rep(" ", filled))
+    end
+    if filled < width then
+      monitor.setCursorPos(x + filled, rowY)
+      monitor.setBackgroundColor(colors.brown)
+      monitor.write(string.rep(" ", width - filled))
     end
   end
   monitor.setBackgroundColor(colors.black)
@@ -241,27 +217,41 @@ local function valueAt(history, t)
   return a.value + (b.value - a.value) * (t - a.t) / (b.t - a.t)
 end
 
--- Continuous line + area, trading-chart style: one accent line tracing
--- the value over TIME (not one bar per received sample) with a dim gray
--- fill beneath it, colored by the latest value (flowColor: lime
--- producing, orange draining, gray idle) -- see this folder's README.md
--- ADR for why a single line beats per-column coloring here. Column
--- values come from valueAt() above, sampled evenly across a fixed
--- window ending "now" so the line keeps moving even if the last
--- broadcast is a moment stale (held flat, same as the real thing). A
+-- Trading-chart line, no fill: a light reference grid drawn first (2
+-- horizontal rows, 2 vertical columns, dim gray -- thin text-character
+-- lines, not colored blocks, so they read as "grid" rather than "another
+-- solid bar"), then one accent line on top tracing the value over TIME
+-- (not one bar per received sample), colored by the latest value
+-- (flowColor: orange producing, red draining, brown idle). Column values
+-- come from valueAt() above, sampled evenly across a fixed window ending
+-- "now" so the line keeps moving even if the last broadcast is a moment
+-- stale (held flat, same as a real trading chart between ticks). A
 -- vertical connector between each column and the previous one turns
 -- isolated points into a continuous line even where the value jumps a
--- lot between two samples. Heights are precomputed once in plain Lua,
--- then each terminal row draws as same-color RUNS, same batching this
--- file has used throughout. Scaled between minV/maxV (the current
--- hour's running min/max, passed in by the caller) rather than this
--- frame's own visible-window min/max, so the vertical scale stays
--- stable instead of jumping every redraw -- unchanged from the earlier
--- version, see this folder's README.md's original graph-scale ADR.
+-- lot between two samples. Small corner labels show the current hour's
+-- min/max directly on the plot instead of a separate text row -- see
+-- this folder's README.md's layout ADR for why. Scaled between
+-- minV/maxV (the current hour's running min/max, passed in by the
+-- caller) rather than this frame's own visible-window min/max, so the
+-- vertical scale stays stable instead of jumping every redraw.
 local function drawGraph(x, yTop, width, height, history, windowMs, minV, maxV)
   local now = os.epoch("utc")
   local range = maxV - minV
   local lineColor = flowColor(history[#history] and history[#history].value or 0)
+
+  -- ---- Reference grid, drawn first so the line/labels layer over it ---
+  monitor.setTextColor(colors.gray)
+  for _, frac in ipairs({ 1 / 3, 2 / 3 }) do
+    monitor.setCursorPos(x, yTop + math.floor(height * frac))
+    monitor.write(string.rep("-", width))
+  end
+  for _, frac in ipairs({ 1 / 3, 2 / 3 }) do
+    local gx = x + math.floor(width * frac)
+    for row = 0, height - 1 do
+      monitor.setCursorPos(gx, yTop + row)
+      monitor.write("|")
+    end
+  end
 
   -- lineRow[col]: row-from-bottom (0..height-1) the line passes through
   -- at that column's sampled time, or nil where there's no data yet.
@@ -301,13 +291,12 @@ local function drawGraph(x, yTop, width, height, history, windowMs, minV, maxV)
     local y = yTop + row
     local runStart, runColor = 1, nil
     for col = 1, width + 1 do
+      -- nil here means "leave the grid/background as-is", not "draw
+      -- black" -- only cells the line actually passes through get
+      -- touched, so the grid stays visible everywhere else.
       local color = nil
-      if col <= width and lineRow[col] then
-        if fromBottom >= connLow[col] and fromBottom <= connHigh[col] then
-          color = lineColor
-        elseif fromBottom < connLow[col] then
-          color = colors.gray -- area fill under the line
-        end
+      if col <= width and lineRow[col] and fromBottom >= connLow[col] and fromBottom <= connHigh[col] then
+        color = lineColor
       end
       if color ~= runColor then
         if runColor then
@@ -320,6 +309,18 @@ local function drawGraph(x, yTop, width, height, history, windowMs, minV, maxV)
     end
   end
   monitor.setBackgroundColor(colors.black)
+
+  -- ---- Corner labels: current-hour max (top-left) / min (bottom-left) -
+  local function cornerLabel(labelY, text)
+    monitor.setCursorPos(x, labelY)
+    monitor.setBackgroundColor(colors.black)
+    monitor.setTextColor(colors.lightGray)
+    monitor.write(text:sub(1, width))
+  end
+  cornerLabel(yTop, formatFE(maxV) .. "/t")
+  if height > 1 then
+    cornerLabel(yTop + height - 1, formatFE(minV) .. "/t")
+  end
 end
 
 -- ---------------------------------------------------------------------
@@ -336,10 +337,10 @@ local flowHistory = {}    -- {t=, value=} samples, oldest first, trimmed to FLOW
 local hourBucket = nil    -- current floor(epoch_ms / 3600000); a change means a new hour
 local hourMin, hourMax = nil, nil
 
--- Flipped once per render() -- drives the header's live dot and a slow
--- blink on "NO SIGNAL", both cheap ways to signal "this is actively
--- updating" versus a frozen screen, at REDRAW_SECONDS cadence (no extra
--- timer needed).
+-- Flipped once per render() -- drives the flow line's leading pulse dot
+-- and a slow blink on "NO SIGNAL", both cheap ways to signal "this is
+-- actively updating" versus a frozen screen, at REDRAW_SECONDS cadence
+-- (no extra timer needed).
 local pulseOn = false
 
 -- Writes one line and advances past it -- used so optional/variable-
@@ -361,97 +362,49 @@ local function render()
   local w, h = monitor.getSize()
   pulseOn = not pulseOn
 
-  -- ---- Header: colored title band + divider with a live clock/dot -----
-  monitor.setBackgroundColor(colors.blue)
-  monitor.setCursorPos(1, 1)
-  monitor.write(string.rep(" ", w))
-  monitor.setCursorPos(1, 1)
-  monitor.write(centerText("POWAH ENERGY GRID", w))
-  monitor.setBackgroundColor(colors.black)
+  local row = 1
 
-  monitor.setCursorPos(1, 2)
-  monitor.setTextColor(colors.gray)
-  monitor.write(string.rep("-", w))
-
-  local clock = os.date("%H:%M:%S")
-  if w >= #clock + 3 then
-    monitor.setCursorPos(w - #clock - 1, 2)
-    monitor.setTextColor(pulseOn and colors.lime or colors.green)
-    monitor.write("*")
-    monitor.setTextColor(colors.lightGray)
-    monitor.write(clock)
-  end
-
-  local row = 4
-
-  -- ---- Storage level (CELL_CHANNEL, kind="ender_cell") ---------------
-  row = writeLine(row, "STORAGE", colors.cyan)
-  if not lastCell then
-    row = writeLine(row, ("  Waiting for cell signal (ch. %d)..."):format(CELL_CHANNEL), colors.gray)
-    row = row + 1
-  else
-    local energy, maxEnergy = lastCell.energy, lastCell.maxEnergy
-    local anomaly = detectAnomaly(energy, maxEnergy)
-    local pct = maxEnergy > 0 and (energy / maxEnergy * 100) or 0
-    local pctClamped = math.min(math.max(pct, 0), 100)
-
-    row = writeLine(row, "  " .. formatFE(energy) .. " / " .. formatFE(maxEnergy))
-    row = writeLine(row, "  " .. (anomaly and string.format("%.1f%%+ (min)", pct) or string.format("%.1f%%", pct)), statusColor(pctClamped))
-    row = row + 1 -- blank
-
-    local barWidth = math.max(w - 2, 10)
-    drawGradientBar(2, row, barWidth, 2, pct)
-    row = row + 2 -- bar rows
-
-    if anomaly then
-      row = writeLine(row, "  GUARD: " .. anomaly, colors.red)
-    end
-
-    local cellStaleSeconds = (os.epoch("utc") - lastCellReceivedAt) / 1000
-    if cellStaleSeconds > STALE_AFTER_SECONDS then
-      row = writeLine(row, string.format("  NO SIGNAL (cell, %ds ago)", math.floor(cellStaleSeconds)), pulseOn and colors.red or colors.gray)
-    end
-  end
-
-  row = row + 1 -- blank between the two sections
-
-  -- ---- Flow (FLOW_CHANNEL, kind="energy_flow") ------------------------
-  row = writeLine(row, "FLOW", colors.lightBlue)
+  -- ---- Flow (FLOW_CHANNEL, kind="energy_flow") -- the number that
+  -- matters most, shown first with no header above it. -----------------
   if not lastFlow then
-    row = writeLine(row, ("  Waiting for flow signal (ch. %d)..."):format(FLOW_CHANNEL), colors.gray)
-    row = row + 1
+    row = writeLine(row, ("Waiting for flow signal (ch. %d)..."):format(FLOW_CHANNEL), colors.gray)
   else
     -- Checked in this order because totalFlowFEt is always a number (0
     -- when nothing was found) -- checking it first would mean the
     -- "no detector" message could never show, silently looking like
     -- "0 FE/t" instead of "nothing is even attached".
     if type(lastFlow.sources) == "table" and #lastFlow.sources == 0 then
-      row = writeLine(row, "  No Energy Detector found", colors.gray)
+      row = writeLine(row, "No Energy Detector found", colors.gray)
     elseif type(lastFlow.totalFlowFEt) == "number" then
-      -- Plain-ASCII trend marker (not an arrow glyph) next to the
-      -- color -- readable even if a viewer's client renders an unusual
-      -- character oddly, since the color alone already carries the
-      -- same meaning (flowColor: lime producing, orange draining, gray
-      -- idle).
+      -- Manual two-color write, not writeLine(): the leading "*" pulses
+      -- yellow/orange every redraw (liveness), independent of the
+      -- trend/value's own flowColor (state) -- see the pulseOn comment
+      -- above.
+      monitor.setCursorPos(1, row)
+      monitor.setTextColor(pulseOn and colors.yellow or colors.orange)
+      monitor.write("*")
+      -- Plain-ASCII trend marker (not an arrow glyph) -- readable even
+      -- if a viewer's client renders an unusual character oddly, since
+      -- the color alone already carries the same meaning (flowColor:
+      -- orange producing, red draining, brown idle).
       local trend = lastFlow.totalFlowFEt > 0 and "+" or (lastFlow.totalFlowFEt < 0 and "-" or "o")
-      row = writeLine(row, "  " .. trend .. " Total: " .. formatFE(lastFlow.totalFlowFEt) .. "/t", flowColor(lastFlow.totalFlowFEt))
+      monitor.setTextColor(flowColor(lastFlow.totalFlowFEt))
+      monitor.write(" " .. trend .. " " .. formatFE(lastFlow.totalFlowFEt) .. "/t")
+      row = row + 1
 
-      if hourMin and hourMax then
-        row = writeLine(row, "    Hour min " .. formatFE(hourMin) .. "/t  max " .. formatFE(hourMax) .. "/t", colors.lightGray)
-      end
-
-      -- Skip the breakdown when there's only one source -- Total already
-      -- says the same thing. Cap the list so a growing sources array
-      -- (more generators added later) can't push the graph off-screen.
+      -- Skip the breakdown when there's only one source -- the line
+      -- above already says the same thing. Cap the list so a growing
+      -- sources array (more generators added later) can't push the
+      -- graph off-screen.
       if type(lastFlow.sources) == "table" and #lastFlow.sources > 1 then
         local MAX_SOURCE_LINES = 4
         for i, source in ipairs(lastFlow.sources) do
           if i > MAX_SOURCE_LINES then
-            row = writeLine(row, ("    +%d more"):format(#lastFlow.sources - MAX_SOURCE_LINES), colors.gray)
+            row = writeLine(row, ("  +%d more"):format(#lastFlow.sources - MAX_SOURCE_LINES), colors.gray)
             break
           end
           if type(source.name) == "string" and type(source.rateFEt) == "number" then
-            row = writeLine(row, "    " .. sourceLabel(source.name) .. ": " .. formatFE(source.rateFEt) .. "/t", flowColor(source.rateFEt))
+            row = writeLine(row, "  " .. sourceLabel(source.name) .. ": " .. formatFE(source.rateFEt) .. "/t", flowColor(source.rateFEt))
           end
         end
       end
@@ -459,13 +412,42 @@ local function render()
 
     local flowStaleSeconds = (os.epoch("utc") - lastFlowReceivedAt) / 1000
     if flowStaleSeconds > STALE_AFTER_SECONDS then
-      row = writeLine(row, string.format("  NO SIGNAL (flow, %ds ago)", math.floor(flowStaleSeconds)), pulseOn and colors.red or colors.gray)
+      row = writeLine(row, string.format("NO SIGNAL (flow, %ds ago)", math.floor(flowStaleSeconds)), pulseOn and colors.red or colors.gray)
+    end
+  end
+
+  row = row + 1 -- blank
+
+  -- ---- Storage level (CELL_CHANNEL, kind="ender_cell") -- secondary,
+  -- kept compact: one combined line + a single-row gauge. ---------------
+  if not lastCell then
+    row = writeLine(row, ("Waiting for cell signal (ch. %d)..."):format(CELL_CHANNEL), colors.gray)
+  else
+    local energy, maxEnergy = lastCell.energy, lastCell.maxEnergy
+    local anomaly = detectAnomaly(energy, maxEnergy)
+    local pct = maxEnergy > 0 and (energy / maxEnergy * 100) or 0
+    local pctClamped = math.min(math.max(pct, 0), 100)
+    local pctText = anomaly and string.format("%.1f%%+", pct) or string.format("%.1f%%", pct)
+
+    row = writeLine(row, pctText .. "  " .. formatFE(energy) .. " / " .. formatFE(maxEnergy), statusColor(pctClamped))
+
+    local barWidth = math.max(w - 2, 10)
+    drawGradientBar(2, row, barWidth, 1, pct)
+    row = row + 1
+
+    if anomaly then
+      row = writeLine(row, "GUARD: " .. anomaly, colors.red)
+    end
+
+    local cellStaleSeconds = (os.epoch("utc") - lastCellReceivedAt) / 1000
+    if cellStaleSeconds > STALE_AFTER_SECONDS then
+      row = writeLine(row, string.format("NO SIGNAL (cell, %ds ago)", math.floor(cellStaleSeconds)), pulseOn and colors.red or colors.gray)
     end
   end
 
   row = row + 1 -- blank before the graph
 
-  -- ---- Rolling flow graph, fills whatever space is left ---------------
+  -- ---- Rolling flow graph -- dominant, fills whatever space is left ---
   if #flowHistory > 0 and hourMin and hourMax then
     local graphHeight = h - row
     if graphHeight >= 3 then
