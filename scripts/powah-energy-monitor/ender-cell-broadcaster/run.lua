@@ -46,6 +46,13 @@
 -- Powah's NBT ever changes shape -- it should never trigger reading raw
 -- NBT longs, but "should never" isn't "can't."
 
+-- Bumped by hand whenever this file changes, logged at READY -- since
+-- `wget run` never saves this file to disk, there's no local mtime to
+-- check; this is the only way to confirm from the terminal/log alone
+-- that a reboot actually picked up the latest push instead of an old
+-- fetch, without re-running anything by hand.
+local SCRIPT_VERSION = "2026-08-31.1"
+
 local CHANNEL = 6701
 local KIND = "ender_cell"
 local INTERVAL_SECONDS = 1
@@ -136,7 +143,7 @@ local ok, err = pcall(function()
     error(tostring(probeEnergy), 0)
   end
 
-  log("READY cell=%.0f/%.0f FE, broadcasting kind=%s on ch.%d every %ds", probeEnergy, probeMax, KIND, CHANNEL, INTERVAL_SECONDS)
+  log("READY v%s -- cell=%.0f/%.0f FE, broadcasting kind=%s on ch.%d every %ds", SCRIPT_VERSION, probeEnergy, probeMax, KIND, CHANNEL, INTERVAL_SECONDS)
 
   local startupAnomaly = detectAnomaly(probeEnergy, probeMax)
   if startupAnomaly then

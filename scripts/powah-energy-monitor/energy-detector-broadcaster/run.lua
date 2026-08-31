@@ -51,6 +51,13 @@
 -- the one wrapping the whole script -- see ../README.md's "every timed
 -- cycle wrapped in its own pcall" ADR for why that matters.
 
+-- Bumped by hand whenever this file changes, logged at READY -- since
+-- `wget run` never saves this file to disk, there's no local mtime to
+-- check; this is the only way to confirm from the terminal/log alone
+-- that a reboot actually picked up the latest push instead of an old
+-- fetch, without re-running anything by hand.
+local SCRIPT_VERSION = "2026-08-31.1"
+
 local CHANNEL = 6702
 local KIND = "energy_flow"
 local INTERVAL_SECONDS = 1
@@ -124,8 +131,8 @@ local ok, err = pcall(function()
   end
 
   local startupSources = readSources()
-  log("READY broadcasting kind=%s on ch.%d every %ds, %d Energy Detector(s) found",
-    KIND, CHANNEL, INTERVAL_SECONDS, #startupSources)
+  log("READY v%s -- broadcasting kind=%s on ch.%d every %ds, %d Energy Detector(s) found",
+    SCRIPT_VERSION, KIND, CHANNEL, INTERVAL_SECONDS, #startupSources)
 
   local function namesOf(sources)
     local names = {}

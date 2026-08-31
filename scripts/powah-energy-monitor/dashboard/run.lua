@@ -47,6 +47,13 @@
 -- character cell -- see this folder's README.md ADR for both, with the
 -- reasoning and the actual call-count difference.
 
+-- Bumped by hand whenever this file changes, logged at READY -- since
+-- `wget run` never saves this file to disk, there's no local mtime to
+-- check; this is the only way to confirm from the terminal/log alone
+-- that a reboot actually picked up the latest push instead of an old
+-- fetch, without re-running anything by hand.
+local SCRIPT_VERSION = "2026-08-31.1"
+
 local CELL_CHANNEL = 6701
 local FLOW_CHANNEL = 6702
 local STALE_AFTER_SECONDS = 5 -- no signal warning if nothing received this long
@@ -359,7 +366,7 @@ local ok, err = pcall(function()
   monitor = requirePeripheral("monitor", "output display")
   monitor.setTextScale(TEXT_SCALE)
 
-  log("READY listening on ch.%d (cell) and ch.%d (flow)", CELL_CHANNEL, FLOW_CHANNEL)
+  log("READY v%s -- listening on ch.%d (cell) and ch.%d (flow)", SCRIPT_VERSION, CELL_CHANNEL, FLOW_CHANNEL)
   safeRender()
 
   local lastAnomaly = nil
