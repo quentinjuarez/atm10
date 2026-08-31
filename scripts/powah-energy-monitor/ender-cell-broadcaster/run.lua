@@ -112,6 +112,9 @@ local ok, err = pcall(function()
   if not modem then
     error("no modem peripheral found -- attach a Wireless or Ender Modem to this computer", 0)
   end
+  if modem.isWireless and not modem.isWireless() then
+    error("the attached modem is a Wired Modem -- broadcasts need a Wireless or Ender Modem to reach the dashboard", 0)
+  end
 
   -- Reads the two fields, with clear errors for every way this can go
   -- wrong: reader facing nothing, facing the wrong block, or Powah

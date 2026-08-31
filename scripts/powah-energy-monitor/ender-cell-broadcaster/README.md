@@ -5,7 +5,7 @@ Reads the Ender Cell's stored/capacity energy, transmits it as `kind="ender_cell
 ## Wiring
 
 - **Block Reader (Advanced Peripherals)** placed **facing** the Ender Cell — it reads whatever block is directly in front of it, not its own block. Use the same placement that worked for `../debug-block-reader.lua` if you ran that first.
-- **Modem** on any other free side of this computer — no cable needed, it talks over the air:
+- **Modem** on any other free side of this computer — **must be Wireless or Ender, not Wired** (a Wired Modem only reaches its own Networking Cable network, never the dashboard). `run.lua` checks `modem.isWireless()` at startup and refuses to run with a clear error if it's Wired — see `../energy-detector-broadcaster/README.md`'s troubleshooting section for how this exact mistake was found.
   - **Wireless Modem** if the dashboard is in the same base/render distance.
   - **Ender Modem** if it's far away or in another dimension — unlimited range, costs more to craft.
 

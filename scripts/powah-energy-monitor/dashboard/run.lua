@@ -109,9 +109,11 @@ local function formatFE(n)
   if n >= 1e9 then return string.format("%s%.2fB FE", sign, n / 1e9) end
   if n >= 1e6 then return string.format("%s%.2fM FE", sign, n / 1e6) end
   if n >= 1e3 then return string.format("%s%.2fK FE", sign, n / 1e3) end
-  -- n can be fractional -- the broadcaster's FE/t values are per-tick
-  -- averages (sum/count), not whole numbers. CC:Tweaked's Lua runtime
-  -- errors on %d with a non-integral float, so round explicitly.
+  -- Every value passed here today is a whole number (raw NBT longs,
+  -- direct getTransferRate() reads and their sum), so this branch
+  -- shouldn't see a fractional n -- rounds explicitly anyway, since
+  -- CC:Tweaked's Lua runtime errors on %d with a non-integral float and
+  -- that's a bad way to find out a future source of data isn't.
   return string.format("%s%d FE", sign, math.floor(n + 0.5))
 end
 
@@ -344,6 +346,9 @@ local ok, err = pcall(function()
   end
 
   local modem = requirePeripheral("modem", "receiver for both broadcast types")
+  if modem.isWireless and not modem.isWireless() then
+    error("the attached modem is a Wired Modem -- receiving needs a Wireless or Ender Modem in range of both broadcasters", 0)
+  end
   if not modem.isOpen(CELL_CHANNEL) then
     modem.open(CELL_CHANNEL)
   end

@@ -21,24 +21,25 @@
 -- computer doesn't need a Block Reader or an Ender Cell at all -- it
 -- only needs Energy Detectors somewhere on its network.
 --
--- WHY SAMPLE EVERY TICK INSTEAD OF ONCE PER BROADCAST: getTransferRate()
--- returns the INSTANTANEOUS flow at the exact tick it's called, not an
--- average -- calling it once per second (once every ~20 ticks) means
--- catching whatever that one arbitrary tick happened to be. If Powah
--- pushes energy in bursts rather than a perfectly smooth stream, a
--- single-tick sample can land on a near-zero gap or a brief spike,
--- nowhere near the true sustained rate (this is what "reads 0, then
--- 700, but real production is 50k" looked like). Sampling every tick and
--- broadcasting the 1-second AVERAGE smooths that out. See this folder's
--- README.md ADR for the reasoning and a performance note.
+-- READS ONCE PER SECOND, NO AVERAGING: an earlier version sampled every
+-- tick and broadcast a 1s average, suspecting Powah delivers energy in
+-- bursts that a single-tick sample could miss. The actual cause of the
+-- bad readings was wiring (a Wired Modem where a Wireless/Ender Modem
+-- was needed -- transmit() never errors, it just never leaves the local
+-- wired network), not sampling -- so the extra timer and per-detector
+-- accumulator were solving the wrong problem. Reverted to one read, one
+-- send, once a second -- same structure as ../ender-cell-broadcaster/run.lua.
+-- Full history in this folder's README.md ADR.
 --
 -- WIRING: place an Advanced Peripherals Energy Detector inline on each
 -- energy source's output cable (the cable passes THROUGH the detector
 -- block), reachable from this computer directly or over a wired network.
--- Plus a modem (Wireless or Ender) on any free side to broadcast with.
+-- Plus a WIRELESS or ENDER modem (not Wired -- see the note above) on
+-- any free side to broadcast with. Check with `peripheral.find("modem"
+-- ).isWireless()` from the `lua` console if unsure which one is attached.
 --
 -- CHANNEL below must match FLOW_CHANNEL in ../dashboard/run.lua exactly.
--- Each broadcast type has its own channel now (see this folder's README
+-- Each broadcast type has its own channel (see this folder's README
 -- ADR) -- ../ender-cell-broadcaster/run.lua uses a different one.
 --
 -- Only problems get logged (crashes, source-list/flow-state changes) --
@@ -46,20 +47,13 @@
 -- so you can check what happened after the fact even without watching
 -- the screen -- e.g. run `edit energy-detector-broadcast.log` in the shell.
 --
--- RESILIENCE: each sample tick and each broadcast tick runs inside its
--- OWN pcall, not just the one wrapping the whole script. One outer pcall
--- alone means any single failed peripheral call anywhere in the loop
--- (a detector's block breaking, a wired network flickering, the modem
--- itself detaching for an instant) kills the script permanently -- it
--- looks like "worked once, then silence" from the dashboard, with
--- nothing left running to even log why. Per-tick pcalls turn that into
--- a logged, recoverable hiccup instead: this tick fails, the next one
--- still runs.
+-- RESILIENCE: each broadcast cycle runs inside its own pcall, not just
+-- the one wrapping the whole script -- see ../README.md's "every timed
+-- cycle wrapped in its own pcall" ADR for why that matters.
 
 local CHANNEL = 6702
 local KIND = "energy_flow"
-local SAMPLE_INTERVAL_SECONDS = 0.05 -- ~1 game tick, CC:Tweaked's own timer resolution
-local BROADCAST_INTERVAL_SECONDS = 1
+local INTERVAL_SECONDS = 1
 local LOG_FILE = "energy-detector-broadcast.log"
 local LOG_MAX_LINES = 50
 local DETECTOR_TYPE = "energy_detector" -- "energyDetector" pre-1.21.1
@@ -97,11 +91,16 @@ local ok, err = pcall(function()
   if not modem then
     error("no modem peripheral found -- attach a Wireless or Ender Modem to this computer", 0)
   end
+  if modem.isWireless and not modem.isWireless() then
+    error("the attached modem is a Wired Modem -- broadcasts need a Wireless or Ender Modem to reach the dashboard", 0)
+  end
 
-  -- Finds every currently-attached Energy Detector by NAME (not just
-  -- type), since there can be more than one -- one per energy source.
-  -- Zero found is not an error, just an empty `sources` list broadcast.
-  local function findDetectorNames()
+  -- Finds every currently-attached Energy Detector and reads its flow in
+  -- one pass. Re-scans peripheral.getNames() every call (once a second,
+  -- not once a tick) so a newly placed or removed detector is picked up
+  -- automatically -- at this frequency there's no need to cache wrapped
+  -- peripherals across calls, so this doesn't.
+  local function readSources()
     local names = {}
     for _, name in ipairs(peripheral.getNames()) do
       if peripheral.getType(name) == DETECTOR_TYPE then
@@ -109,116 +108,68 @@ local ok, err = pcall(function()
       end
     end
     table.sort(names) -- stable order broadcast to broadcast
-    return names
-  end
 
-  -- Re-wraps the detector set. Called once per BROADCAST cycle (1/s),
-  -- not once per sample (20/s) -- peripheral.getNames() walks the whole
-  -- network's peripheral list, which is worth doing once a second, not
-  -- every tick. Already-known detectors keep their wrapped reference
-  -- instead of re-wrapping for no reason.
-  local knownDetectors = {} -- [name] = wrapped peripheral
-  local function refreshDetectors()
-    local names = findDetectorNames()
-    local refreshed = {}
+    local sources, total = {}, 0
     for _, name in ipairs(names) do
-      if knownDetectors[name] then
-        refreshed[name] = knownDetectors[name]
-      else
-        -- peripheral.wrap() can fail for a name that just disappeared
-        -- (block broken between getNames() and here) -- skip it this
-        -- cycle rather than letting that kill the whole broadcaster;
-        -- it'll just be retried on the next refresh.
-        local wrapOk, wrapped = pcall(peripheral.wrap, name)
-        if wrapOk and wrapped then
-          refreshed[name] = wrapped
+      local wrapOk, d = pcall(peripheral.wrap, name)
+      if wrapOk and d then
+        local readOk, rate = pcall(d.getTransferRate)
+        if readOk and type(rate) == "number" then
+          table.insert(sources, { name = name, rateFEt = rate })
+          total = total + rate
         end
       end
     end
-    knownDetectors = refreshed
-    return names
+    return sources, total
   end
 
-  local detectorNames = refreshDetectors()
-  log("Energy Detectors (%s) found: %d (%s)", DETECTOR_TYPE, #detectorNames,
-    #detectorNames > 0 and table.concat(detectorNames, ", ") or "none yet")
-  log("READY broadcasting kind=%s on ch.%d, sampling every tick, averaging over %ds",
-    KIND, CHANNEL, BROADCAST_INTERVAL_SECONDS)
+  local startupSources = readSources()
+  log("READY broadcasting kind=%s on ch.%d every %ds, %d Energy Detector(s) found",
+    KIND, CHANNEL, INTERVAL_SECONDS, #startupSources)
 
-  local lastDetectorNames = table.concat(detectorNames, ",")
+  local function namesOf(sources)
+    local names = {}
+    for _, s in ipairs(sources) do table.insert(names, s.name) end
+    return table.concat(names, ",")
+  end
+
+  -- Seeded from the startup read so the READY line above isn't
+  -- immediately followed by a redundant "Energy Detectors changed" on
+  -- the very first cycle.
+  local lastDetectorNames = namesOf(startupSources)
   local lastActive = nil -- nil = unknown yet, else true/false on total flow ~= 0
 
-  -- Per-detector running sum/count for the current broadcast window.
-  local sampleSum, sampleCount = {}, {}
-
-  local sampleTimer = os.startTimer(SAMPLE_INTERVAL_SECONDS)
-  local broadcastTimer = os.startTimer(BROADCAST_INTERVAL_SECONDS)
-
   while true do
-    local event, id = os.pullEvent("timer")
+    -- Own pcall: a single failed peripheral call here (a detector's
+    -- block breaking, the modem detaching for an instant) shouldn't end
+    -- the whole script -- see ../README.md's matching ADR.
+    local cycleOk, cycleErr = pcall(function()
+      local sources, totalFlowFEt = readSources()
 
-    if id == sampleTimer then
-      -- Own pcall: a bad read on one detector shouldn't take the timer
-      -- (and every future sample/broadcast) down with it.
-      local sampleOk, sampleErr = pcall(function()
-        for name, d in pairs(knownDetectors) do
-          local readOk, rate = pcall(d.getTransferRate)
-          if readOk and type(rate) == "number" then
-            sampleSum[name] = (sampleSum[name] or 0) + rate
-            sampleCount[name] = (sampleCount[name] or 0) + 1
-          end
-        end
-      end)
-      if not sampleOk then
-        log("SAMPLE ERROR: %s", tostring(sampleErr))
-      end
-      sampleTimer = os.startTimer(SAMPLE_INTERVAL_SECONDS)
-
-    elseif id == broadcastTimer then
-      -- Own pcall, and the timer restart + accumulator reset below
-      -- happen unconditionally (outside it) -- a failed broadcast this
-      -- second still leaves the loop in a clean state to try again next
-      -- second, instead of getting stuck.
-      local broadcastOk, broadcastErr = pcall(function()
-        local names = refreshDetectors()
-
-        local joined = table.concat(names, ",")
-        if joined ~= lastDetectorNames then
-          log("Energy Detectors changed: now %d (%s)", #names, joined ~= "" and joined or "none")
-          lastDetectorNames = joined
-        end
-
-        local sources, totalFlowFEt = {}, 0
-        for _, name in ipairs(names) do
-          local count = sampleCount[name] or 0
-          -- A detector with zero ticks sampled this window (just placed,
-          -- or every read failed) reports 0 rather than being omitted,
-          -- so it still shows up in `sources`.
-          local avg = count > 0 and (sampleSum[name] / count) or 0
-          table.insert(sources, { name = name, rateFEt = avg })
-          totalFlowFEt = totalFlowFEt + avg
-        end
-
-        local active = totalFlowFEt ~= 0
-        if active ~= lastActive then
-          log("Total flow: %s (%.0f FE/t avg)", active and "ACTIVE" or "IDLE", totalFlowFEt)
-          lastActive = active
-        end
-
-        modem.transmit(CHANNEL, CHANNEL, {
-          kind = KIND,
-          t = os.epoch("utc"),
-          sources = sources,
-          totalFlowFEt = totalFlowFEt,
-        })
-      end)
-      if not broadcastOk then
-        log("BROADCAST ERROR: %s", tostring(broadcastErr))
+      local joined = namesOf(sources)
+      if joined ~= lastDetectorNames then
+        log("Energy Detectors changed: now %d (%s)", #sources, joined ~= "" and joined or "none")
+        lastDetectorNames = joined
       end
 
-      sampleSum, sampleCount = {}, {}
-      broadcastTimer = os.startTimer(BROADCAST_INTERVAL_SECONDS)
+      local active = totalFlowFEt ~= 0
+      if active ~= lastActive then
+        log("Total flow: %s (%.0f FE/t)", active and "ACTIVE" or "IDLE", totalFlowFEt)
+        lastActive = active
+      end
+
+      modem.transmit(CHANNEL, CHANNEL, {
+        kind = KIND,
+        t = os.epoch("utc"),
+        sources = sources,
+        totalFlowFEt = totalFlowFEt,
+      })
+    end)
+    if not cycleOk then
+      log("CYCLE ERROR: %s", tostring(cycleErr))
     end
+
+    os.sleep(INTERVAL_SECONDS)
   end
 end)
 
