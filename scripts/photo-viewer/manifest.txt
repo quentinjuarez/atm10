@@ -1,0 +1,4 @@
+-- One .nfp filename per line, matching a file in images/. Lines starting
+-- with -- and blank lines are ignored. run.lua reads this top to bottom
+-- and shows images in this order.
+testcard.nfp

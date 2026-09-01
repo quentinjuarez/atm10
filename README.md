@@ -10,27 +10,45 @@ scripts/
 │   ├── skeleton.lua               generic tick + event loop, wrapped in pcall
 │   ├── sensor-broadcaster.lua     read a peripheral on an interval, broadcast over rednet
 │   └── monitor-dashboard.lua      listen for a broadcast, render it on a monitor
-└── powah-energy-monitor/        one feature = one top-level folder
-    ├── README.md                  shared architecture + decisions for this feature
-    ├── debug-block-reader.lua     one-off diagnostic, not for auto-boot
-    ├── ender-cell-broadcaster/     one computer = one subfolder; storage level only
-    │   ├── run.lua                   the real logic
-    │   ├── startup.lua                fetched by install.lua, saved locally as startup.lua
-    │   ├── install.lua                run once: creates startup.lua for you
-    │   └── README.md                  wiring + ADR for this computer specifically
-    ├── energy-detector-broadcaster/ another computer = another subfolder; FE/t flow only
-    │   ├── run.lua
-    │   ├── startup.lua
-    │   ├── install.lua
-    │   └── README.md
-    └── dashboard/                   receives BOTH broadcast types, renders both
-        ├── run.lua
-        ├── startup.lua
-        ├── install.lua
-        └── README.md
+├── powah-energy-monitor/        one feature = one top-level folder
+│   ├── README.md                  shared architecture + decisions for this feature
+│   ├── debug-block-reader.lua     one-off diagnostic, not for auto-boot
+│   ├── ender-cell-broadcaster/     one computer = one subfolder; storage level only
+│   │   ├── run.lua                   the real logic
+│   │   ├── startup.lua                fetched by install.lua, saved locally as startup.lua
+│   │   ├── install.lua                run once: creates startup.lua for you
+│   │   └── README.md                  wiring + ADR for this computer specifically
+│   ├── energy-detector-broadcaster/ another computer = another subfolder; FE/t flow only
+│   │   ├── run.lua
+│   │   ├── startup.lua
+│   │   ├── install.lua
+│   │   └── README.md
+│   └── dashboard/                   receives BOTH broadcast types, renders both
+│       ├── run.lua
+│       ├── startup.lua
+│       ├── install.lua
+│       └── README.md
+├── photo-viewer/                Single-computer feature -- no subfolder split needed
+│   ├── run.lua                     (see this feature's own README for why)
+│   ├── startup.lua
+│   ├── install.lua
+│   ├── README.md
+│   ├── manifest.txt                list of image filenames to show, in order
+│   └── images/*.nfp                the actual pixel-art images
+└── video-player/                Also single-computer
+    ├── run.lua
+    ├── startup.lua
+    ├── install.lua
+    ├── README.md
+    └── clips/<name>/frames.ccv + audio.dfpwm   one subfolder per clip
+
+tools/                          run on YOUR OWN computer, never in-game
+├── README.md                     what these are and why they're not Lua
+├── png_to_nfp.py                 photo -> .nfp, for photo-viewer/
+└── video_to_ccv.py               video -> frames.ccv + audio.dfpwm, for video-player/
 ```
 
-Each feature (a "main function" — right now just the one) gets its own top-level folder under `scripts/`, with one subfolder per computer it needs. Every computer subfolder follows the same three-file pattern: `run.lua` is the actual program, `startup.lua` is what ends up installed as the computer's real `startup.lua`, and `install.lua` is the one-time installer that fetches `startup.lua` and saves it under that exact name — see "Auto-boot" below for why that's a separate step from just running `run.lua`.
+Each feature (a "main function") gets its own top-level folder under `scripts/`. A feature that needs multiple independent computers (like `powah-energy-monitor`) splits into one subfolder per computer; a feature that's genuinely one computer (`photo-viewer`, `video-player`) skips that extra nesting and puts `run.lua`/`startup.lua`/`install.lua` directly in the feature folder. Every computer — nested or not — follows the same three-file pattern: `run.lua` is the actual program, `startup.lua` is what ends up installed as the computer's real `startup.lua`, and `install.lua` is the one-time installer that fetches `startup.lua` and saves it under that exact name — see "Auto-boot" below for why that's a separate step from just running `run.lua`.
 
 The two broadcasters are deliberately separate scripts/computers, not one combined one — storage level (Ender Cell) and flow (Energy Detectors) are independent concerns with independent wiring, and can live on different computers if that suits the build. Both broadcast on the same channel; the dashboard tells their messages apart by a `kind` field and tracks each independently, so losing one doesn't blank out the other. See [`powah-energy-monitor/README.md`](./scripts/powah-energy-monitor/README.md)'s ADR for the full reasoning.
 
@@ -61,13 +79,15 @@ You don't `wget` that file directly, though — its whole point is to be saved l
 wget run https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/powah-energy-monitor/ender-cell-broadcaster/install.lua
 wget run https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/powah-energy-monitor/energy-detector-broadcaster/install.lua
 wget run https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/powah-energy-monitor/dashboard/install.lua
+wget run https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/photo-viewer/install.lua
+wget run https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/video-player/install.lua
 ```
 
 Then `reboot`. After that, a reboot (or world/server restart) brings the computer back up already running the latest pushed `run.lua` — no need to `wget run` by hand again unless you're actively testing an in-progress change.
 
 ## Logs
 
-The `powah-energy-monitor` scripts print problems (crashes, guard warnings, read failures) live to the terminal and also keep a small bounded on-disk log — capped at 50 lines, rewritten in place, so a computer can run for days without slowly filling its disk. Routine successful operation isn't logged, only things worth knowing about — see each computer's README for exactly what triggers a log line.
+Every script in this repo prints problems (crashes, guard warnings, read/fetch failures) live to the terminal and also keeps a small bounded on-disk log — capped at 50 lines, rewritten in place, so a computer can run for days without slowly filling its disk. Routine successful operation isn't logged, only things worth knowing about — see each computer's README for exactly what triggers a log line.
 
 To read a log after the fact — e.g. to see why a computer isn't broadcasting after you weren't watching it:
 
