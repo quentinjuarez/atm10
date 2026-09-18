@@ -11,7 +11,7 @@
 
 local URL = "https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/photo-viewer/run.lua"
 local MAX_ATTEMPTS = 5
-local RETRY_SECONDS = 3
+local RETRY_SECONDS = 5
 
 for attempt = 1, MAX_ATTEMPTS do
   if shell.run("wget", "run", URL) then
