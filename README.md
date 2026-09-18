@@ -23,12 +23,17 @@ scripts/
 │   │   ├── startup.lua
 │   │   ├── install.lua
 │   │   └── README.md
-│   ├── induction-broadcaster/     Mekanism alternative: replaces the two above with one computer
+│   ├── dashboard/                   Powah setup's dashboard, receives BOTH broadcast types
 │   │   ├── run.lua
 │   │   ├── startup.lua
 │   │   ├── install.lua
 │   │   └── README.md
-│   └── dashboard/                   receives BOTH broadcast types, renders both
+│   ├── induction-broadcaster/     Mekanism alternative: replaces the two broadcasters above
+│   │   ├── run.lua                   reads the Induction Port's native peripheral (ch. 6703)
+│   │   ├── startup.lua
+│   │   ├── install.lua
+│   │   └── README.md
+│   └── induction-dashboard/       Mekanism setup's OWN dashboard -- listens on ch. 6703 only
 │       ├── run.lua
 │       ├── startup.lua
 │       ├── install.lua
@@ -82,15 +87,14 @@ You don't `wget` that file directly, though — its whole point is to be saved l
 ```
 -- one-time, on each computer (pick the matching folder):
 
--- Powah Ender Cell setup (two computers):
+-- Powah Ender Cell setup (three computers):
 wget run https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/powah-energy-monitor/ender-cell-broadcaster/install.lua
 wget run https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/powah-energy-monitor/energy-detector-broadcaster/install.lua
-
--- OR Mekanism Induction Matrix setup (one computer, replaces both above):
-wget run https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/powah-energy-monitor/induction-broadcaster/install.lua
-
--- Either way, the same dashboard:
 wget run https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/powah-energy-monitor/dashboard/install.lua
+
+-- OR Mekanism Induction Matrix setup (two computers, its own dashboard):
+wget run https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/powah-energy-monitor/induction-broadcaster/install.lua
+wget run https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/powah-energy-monitor/induction-dashboard/install.lua
 
 -- Unrelated features:
 wget run https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/photo-viewer/install.lua

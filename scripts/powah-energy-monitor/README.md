@@ -8,34 +8,40 @@ Three-computer system, one dashboard receiving two independent broadcasts:
 
 See each computer's own `README.md` for wiring and decisions specific to it — this file only covers what's shared between all three.
 
-**Got a Mekanism Induction Matrix instead of a Powah Ender Cell?** [`induction-broadcaster/`](induction-broadcaster/) reads capacity, stored energy, AND input/output FE/t all from one Block Reader on the Induction Casing, replacing `ender-cell-broadcaster` + `energy-detector-broadcaster` with a single computer — same channels, same message shapes, `dashboard/` needs no changes either way. Both broadcaster setups are kept in the repo; use whichever matches your actual power source.
+**Got a Mekanism Induction Matrix instead of a Powah Ender Cell?** [`induction-broadcaster/`](induction-broadcaster/) reads capacity, stored energy, input/output FE/t, and more directly from the Induction Port's own native peripheral (Mekanism's built-in ComputerCraft integration — NOT a Block Reader; see that folder's README for why), replacing `ender-cell-broadcaster` + `energy-detector-broadcaster` with a single computer. It broadcasts on its own channel (6703) with its own dedicated dashboard, [`induction-dashboard/`](induction-dashboard/) — not the `dashboard/` below, which keeps serving the Powah pair unchanged. Both full setups are kept in the repo; use whichever matches your actual power source.
 
 ## Layout
 
 ```
 powah-energy-monitor/
-├── debug-block-reader.lua        one-off diagnostic (see ender-cell-broadcaster/README.md)
-├── debug-induction-reader.lua    same, for a Mekanism Induction Matrix casing
-├── ender-cell-broadcaster/       Powah setup: storage level only
-│   ├── run.lua                      the real logic — install via install.lua, not directly
-│   ├── startup.lua                   fetched by install.lua, saved locally as startup.lua
-│   ├── install.lua                   run once: wget run install.lua
-│   └── README.md                     ADR: why Block Reader, channel/kind, logging
-├── energy-detector-broadcaster/  Powah setup: flow only
+├── debug-block-reader.lua          one-off diagnostic (see ender-cell-broadcaster/README.md)
+├── debug-induction-reader.lua      dead end -- proved a Casing's NBT has no energy data, kept for history
+├── debug-mekanism-peripheral.lua   found the real fix -- the Induction PORT's native peripheral
+├── ender-cell-broadcaster/         Powah setup: storage level only
+│   ├── run.lua                        the real logic — install via install.lua, not directly
+│   ├── startup.lua                     fetched by install.lua, saved locally as startup.lua
+│   ├── install.lua                     run once: wget run install.lua
+│   └── README.md                       ADR: why Block Reader, channel/kind, logging
+├── energy-detector-broadcaster/    Powah setup: flow only
 │   ├── run.lua
 │   ├── startup.lua
 │   ├── install.lua
-│   └── README.md                     ADR: why every Energy Detector, not one generator peripheral
-├── induction-broadcaster/        Mekanism setup: replaces BOTH computers above
+│   └── README.md                       ADR: why every Energy Detector, not one generator peripheral
+├── dashboard/                      Powah setup's dashboard, ch. 6701+6702
 │   ├── run.lua
 │   ├── startup.lua
 │   ├── install.lua
-│   └── README.md                     ADR: one computer instead of two, field names unconfirmed
-└── dashboard/                    same dashboard, works with either broadcaster setup
+│   └── README.md                       ADR: dual-stream state, guard/anomaly handling, monitor sizing
+├── induction-broadcaster/          Mekanism setup: replaces BOTH broadcasters above
+│   ├── run.lua                         reads the Induction Port's native peripheral, ch. 6703
+│   ├── startup.lua
+│   ├── install.lua
+│   └── README.md                       ADR: the two dead ends tried first, then the real fix
+└── induction-dashboard/            Mekanism setup's OWN dashboard, ch. 6703 only
     ├── run.lua
     ├── startup.lua
     ├── install.lua
-    └── README.md                     ADR: dual-stream state, guard/anomaly handling, monitor sizing
+    └── README.md                       ADR: one state track, shows everything the Port exposes
 ```
 
 ## ADR: three computers, not one reading + displaying everything

@@ -1,22 +1,19 @@
 # Induction broadcaster
 
-**Replaces both** [`../ender-cell-broadcaster/`](../ender-cell-broadcaster/) and [`../energy-detector-broadcaster/`](../energy-detector-broadcaster/) with a single computer, if your setup is a Mekanism Induction Matrix rather than a Powah Ender Cell — one Block Reader facing the Induction Casing gives capacity, stored energy, AND live input/output FE/t all at once, so there's no need for the two-computer split the Powah setup required. See [`../README.md`](../README.md) for the shared three-computer architecture this replaces.
+Reads a Mekanism Induction Matrix through Mekanism's **own built-in ComputerCraft integration** — the `inductionPort` peripheral — and broadcasts everything it exposes (storage, flow, transfer cap) as one message on `CHANNEL` (6703). Paired with [`../induction-dashboard/`](../induction-dashboard/), a dedicated new dashboard — **not** [`../dashboard/`](../dashboard/), which still serves the Powah `ender-cell-broadcaster`/`energy-detector-broadcaster` pair unchanged. See [`../README.md`](../README.md) for how the alternatives relate.
 
-**The two old scripts are kept in the repo, untouched** — this is an alternative, not a migration. Run whichever setup matches your actual power source; both broadcast the same message shapes so [`../dashboard/`](../dashboard/) works unmodified either way.
+## Read this first: how we got here (it took two wrong turns)
 
-## Read this before installing: field names are unconfirmed
+1. **First attempt: Block Reader facing the Induction Casing, reading raw NBT.** This is exactly how `../ender-cell-broadcaster/` reads a Powah Ender Cell, so it seemed like the obvious approach. [`../debug-induction-reader.lua`](../debug-induction-reader.lua)'s dump against a live Casing showed only `redstone`/`inventory_id`/`current_redstone` — **no energy data at all**. The capacity/input/output numbers visible in the block's own GUI come from a live query against the multiblock's in-memory structure, not from that block's saved NBT — so no field name guess there could ever have worked, on any Casing.
+2. **Second attempt: check for a native Mekanism peripheral on the Casing.** [`../debug-mekanism-peripheral.lua`](../debug-mekanism-peripheral.lua) run against that same Casing found Mekanism DOES expose it as a peripheral (`mekanism:induction_casing`) — but only generic item/fluid methods (`pullItems`, `tanks`, `pushFluid`, ...), confirmed from an actual in-game screenshot. Still no energy.
+3. **What actually works: the INDUCTION PORT block specifically**, not the Casing. A community reference script (Wolfe's Mekanism Induction Matrix Monitor) confirmed the real peripheral type and method names — `peripheral.find("inductionPort")` with `getEnergy()`, `getMaxEnergy()`, `getEnergyFilledPercentage()`, `getLastInput()`, `getLastOutput()`, `getTransferCap()`. `run.lua` uses these directly. No Block Reader is used or needed anywhere in this computer.
 
-Powah's Ender Cell fields (`energy_stored_main_energy`/`energy_capacity_main_energy`) were confirmed by literally dumping a live block's NBT with [`../debug-block-reader.lua`](../debug-block-reader.lua) before `ender-cell-broadcaster` was written. Mekanism's Induction Matrix NBT schema hasn't gone through that same confirmation step yet.
-
-`run.lua` tries several plausible field names for each value (`CAPACITY_FIELDS`/`ENERGY_FIELDS`/`INPUT_FIELDS`/`OUTPUT_FIELDS` at the top of the file) and — this is the important part — **if none of a value's candidates match, it logs every field the Block Reader actually returned**, so the real names are visible straight from `induction-broadcast.log` without needing to guess blind a second time. You can also run [`../debug-induction-reader.lua`](../debug-induction-reader.lua) first standalone to get the same dump before wiring up the full broadcaster at all — faster feedback loop while narrowing down the right names.
-
-If the log shows different names than what's in `run.lua`, tell me what they are (or edit the four `*_FIELDS` lists yourself) and push — no reinstall needed, `startup.lua` always fetches the current `run.lua`.
+If `peripheral.find("inductionPort")` comes back `nil` when you install this, the computer almost certainly isn't touching the Port block — see Wiring below.
 
 ## Wiring
 
-- **Block Reader (Advanced Peripherals)** placed **facing** the Induction Casing — same placement convention as `../ender-cell-broadcaster/`.
-- **Modem** on any other free side — **must be Wireless or Ender, not Wired**. `run.lua` checks `modem.isWireless()` at startup, same as every other broadcaster in this repo.
-- No Energy Detector needed — the Induction Matrix's own NBT already carries live input/output, unlike Powah where flow had to be measured separately on a cable.
+- This computer must be **directly adjacent to the Induction Port block** (or on the same Wired Modem + Networking Cable network as it) — not the Casing, not any other multiblock component. The Port is the block Mekanism actually routes FE in/out through, and the only one that exposes energy methods as a peripheral.
+- **Modem** on any other free side — **must be Wireless or Ender, not Wired**. `run.lua` checks `modem.isWireless()` at startup, same as every broadcaster in this repo.
 
 ## Install
 
@@ -26,34 +23,26 @@ wget run https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/powa
 
 Then `reboot` to activate `startup.lua`. To test a change without rebooting: `wget run https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/powah-energy-monitor/induction-broadcaster/run.lua`.
 
-## ADR: one computer instead of two, broadcasting both message kinds
+## ADR: a dedicated new dashboard/channel, not reusing `../dashboard/`'s message shapes
 
-**Context.** The Powah setup needed two separate computers because storage level (Ender Cell) and flow (Energy Detector on a cable) were physically different peripherals with no relationship to each other. A Mekanism Induction Matrix doesn't have that split — one block's NBT already contains capacity, stored energy, and both transfer directions.
+**Context.** An earlier version of this file tried to stay compatible with `../dashboard/`'s existing `kind="ender_cell"`/`kind="energy_flow"` messages on `CELL_CHANNEL`/`FLOW_CHANNEL`, so that dashboard wouldn't need any changes. That meant collapsing everything into two message shapes designed around Powah's data (a single storage reading, a single flow reading) — no room for percentage, transfer cap, or charge/discharge ETA, all of which the Induction Port hands over for free and are worth showing.
 
-**Decision.** `run.lua` reads the Block Reader once per cycle and transmits BOTH `kind="ender_cell"` (on `CELL_CHANNEL`) and `kind="energy_flow"` (on `FLOW_CHANNEL`) from that single read — the exact same two message shapes `../ender-cell-broadcaster/` and `../energy-detector-broadcaster/` send from two separate computers. `../dashboard/run.lua` dispatches by channel + `kind` regardless of how many computers are actually sending, so it needed zero changes.
+**Decision.** One new message shape, `kind="induction_matrix"`, carrying every field the Port exposes, on its own `CHANNEL = 6703`. `../induction-dashboard/` is a dedicated receiver for it, built new rather than bolted onto `../dashboard/`.
 
-**Consequences.** One computer and one peripheral to build instead of three computers total (two broadcasters + dashboard) down to two (this + dashboard). The trade-off Powah's split bought you — the two streams going stale independently, so you can tell which physical thing broke — is gone here, but that's fine: with one block reader on one computer, there's only one thing left to go wrong, not two independent ones.
+**Consequences.** Two dashboards to choose from depending on which broadcaster setup is running, instead of one dashboard serving both — but each one's code stays simple and specific to its data source, instead of `../dashboard/` growing conditional logic for two very different underlying peripherals. `../dashboard/` is completely unaffected either way.
 
-## ADR: input/output sent as both a net total AND two synthetic "sources"
+## ADR: `changePerSecond`/ETA measured from actual energy delta, not derived from input−output
 
-**Context.** The dashboard's `Total: X FE/t` line and graph expect a single signed number (positive = producing, negative = draining) — that's what Powah's Energy Detectors summed to. An Induction Matrix reports input and output as two separate, always-non-negative numbers instead, and collapsing them into just their difference would hide the fact that, say, 50K in and 44K out (net +6K) is a very different situation from 6K in and 0 out (also net +6K).
+**Context.** `getLastInput()`/`getLastOutput()` are the Port's own last-tick transfer numbers — in principle `input - output` should equal how fast stored energy is actually changing, but there's no guarantee Mekanism's internal accounting matches that exactly every tick (transfer caps, internal losses, timing of when the Port's cached values update relative to when the broadcaster reads them).
 
-**Decision.** `totalFlowFEt` is `input - output`, feeding the existing graph/Total line unchanged. Additionally, `sources` carries two synthetic entries — `{name="input", rateFEt=input}` and `{name="output", rateFEt=-output}` (negated so it colors red/draining like everything else keyed on sign) — reusing `../dashboard/`'s existing per-source breakdown display, which already handles an arbitrary-length `sources` list generically.
+**Decision.** `run.lua` tracks `previousEnergy`/`previousT` across broadcast cycles and computes `changePerSecond` from the **actually observed** change in `getEnergy()` over the real elapsed time, not from `(input - output) * ticks_per_second`. Charge/discharge ETA (`etaSeconds`) is derived from that measured rate: `(maxEnergy - energy) / changePerSecond` while charging, `energy / -changePerSecond` while discharging, `nil` when flat. This mirrors the community reference script's own approach.
 
-**Consequences.** The dashboard shows net flow as its headline number (unchanged behavior) plus the input/output breakdown underneath (since `#sources > 1` there), with no dashboard code changes — it already didn't assume `sources` summed to `totalFlowFEt`. `sourceLabel()`'s `_<N>` suffix-shortening doesn't match `"input"`/`"output"`, so they just show as-is, which is clearer here than a shortened form would be anyway.
+**Consequences.** ETA reflects what's actually happening to the stored total, even if it doesn't line up exactly with the input/output numbers shown alongside it. `netFlow` (`input - output`) is still broadcast separately and is what drives the graph/flow-color — it's a cleaner signal moment-to-moment than a measured delta would be at 1s resolution (measuring a small energy change over exactly 1 second is noisier than reading the Port's own last-tick transfer numbers directly).
 
-## ADR: Joules→FE conversion applied once, right after reading
+## ADR: Mekanism's own `mekanismEnergyHelper` preferred over a hardcoded ratio
 
-**Context.** Mekanism stores energy internally in Joules, not Forge Energy (FE) — everything downstream (`../dashboard/`'s `formatFE()`, the whole rest of this repo) assumes FE.
+**Context.** The Port's methods return raw Joules, Mekanism's internal unit, but everything downstream in this repo assumes FE. A hardcoded `JOULES_PER_FE = 2.5` ratio works but is one more thing that could be subtly wrong for a given Mekanism version.
 
-**Decision.** `JOULES_PER_FE = 2.5` (Mekanism's own published conversion ratio) divides every raw NBT value before it's used for anything — anomaly detection, logging, or broadcasting. Conversion happens in exactly one place (`readInduction()`), not scattered across the cycle loop.
+**Decision.** If `mekanismEnergyHelper` (a global Mekanism's own CC:Tweaked integration exposes, per the reference script) is present with a `joulesToFE` function, `toFE()` uses that instead — the mod's own conversion, not a guessed constant. `JOULES_PER_FE` is the fallback when that global isn't available, same defensive posture the reference script itself uses. The `READY` log line states which path was actually used, so it's never silently ambiguous which one is active.
 
-**Consequences.** If dashboard numbers come out exactly 2.5x too high or too low, this is the first thing to check — either the ratio itself, or (more likely) that raw NBT values were already in FE and shouldn't be divided at all. Set `JOULES_PER_FE = 1` if a debug dump shows the latter.
-
-## ADR: `requireNumber()` fails loudly on a non-number field, doesn't guess
-
-**Context.** Mekanism's large energy values use its own "FloatingLong" numeric type internally, which *might* serialize to NBT as a nested table (e.g. two longs) instead of a plain number — this wasn't a concern for Powah's Ender Cell, whose NBT fields were confirmed to be plain longs.
-
-**Decision.** `requireNumber()` passes plain numbers through untouched and raises a specific, actionable error — which field, which NBT key matched, what type it actually got — for anything else, rather than trying to coerce a table via `tostring`/`tonumber` and silently broadcasting garbage.
-
-**Consequences.** A FloatingLong-as-table situation shows up as a clear `CRASHED: field 'energy' ... is a table, not a number` log line pointing at exactly which field needs a follow-up fix (reading a specific sub-field once the table's shape is known), instead of a wrong number quietly reaching the dashboard.
+**Consequences.** Correct regardless of whether the exact Joules-to-FE ratio ever changes between Mekanism versions, as long as the helper itself is present. If dashboard numbers look exactly 2.5x off, the log's `READY` line is the first thing to check — it says whether the fallback ratio was actually used.

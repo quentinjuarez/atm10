@@ -1,47 +1,46 @@
 -- powah-energy-monitor/induction-broadcaster/run.lua
 --
--- Replaces BOTH ../ender-cell-broadcaster/ and
--- ../energy-detector-broadcaster/ with a SINGLE computer + Block Reader
--- facing a Mekanism Induction Matrix casing: the casing's own NBT
--- carries capacity, stored energy, AND live input/output FE/t all in
--- one place, so there's no more need for a separate Ender Cell + Energy
--- Detector setup. Broadcasts the EXACT SAME message shapes on the EXACT
--- SAME channels as the two scripts it replaces (kind="ender_cell" on
--- CELL_CHANNEL, kind="energy_flow" on FLOW_CHANNEL) -- ../dashboard/
--- run.lua needs ZERO changes to work with this. See this folder's
--- README.md ADR for the full reasoning and why the two old scripts are
--- kept in the repo, not deleted.
+-- Reads a Mekanism Induction Matrix directly through Mekanism's OWN
+-- built-in ComputerCraft integration -- the "inductionPort" peripheral,
+-- a real peripheral with real methods (getEnergy(), getLastInput(),
+-- etc.), NOT Advanced Peripherals' Block Reader/NBT.
 --
--- Don't wget this file directly to install it -- see install.lua in this
--- same folder, or the repo root README's "Installing a script in-game".
+-- That NBT route was tried first and confirmed dead: ../debug-induction-
+-- reader.lua's dump against a plain Induction Casing showed only
+-- generic multiblock bookkeeping (redstone/inventory_id) -- no energy
+-- data at all, because a Casing's own tile NBT never carries it; the
+-- multiblock's live stats are queried on demand, not stored there. A
+-- second debug run (../debug-mekanism-peripheral.lua) against that same
+-- Casing found Mekanism DOES expose it as a native peripheral
+-- ("mekanism:induction_casing") -- but only with generic item/fluid
+-- methods (pullItems, tanks, ...), still no energy. The INDUCTION PORT
+-- block specifically is the one that exposes energy methods -- method
+-- names below confirmed against a working community reference script
+-- (Wolfe's Mekanism Induction Matrix Monitor), not guessed. See this
+-- folder's README.md ADR for the full trail.
 --
--- FIELD NAMES ARE UNCONFIRMED. Unlike Powah's Ender Cell (confirmed via
--- ../debug-block-reader.lua before ../ender-cell-broadcaster/ was
--- written), Mekanism's exact Induction Matrix NBT schema hasn't been
--- dumped against a live block yet. CAPACITY_FIELDS/ENERGY_FIELDS/
--- INPUT_FIELDS/OUTPUT_FIELDS below each try a short list of plausible
--- names; the FIRST one present in the NBT wins. If NONE of a field's
--- candidates are present, this logs every top-level key the Block
--- Reader actually returned (and one level into any nested table, in
--- case Mekanism's FloatingLong energy type serializes as a compound
--- rather than a plain number) so the real names are visible straight
--- from the log -- run ../debug-induction-reader.lua first for the same
--- info without waiting for this script to fail.
+-- Broadcasts ONE message (kind="induction_matrix") on CHANNEL -- a NEW
+-- dedicated channel, not the CELL_CHANNEL/FLOW_CHANNEL pair
+-- ../dashboard/ listens on, since this carries strictly more data than
+-- that dashboard's two message shapes hold (percentage, transfer cap,
+-- charge/discharge ETA). See ../induction-dashboard/ for the matching
+-- receiver.
 --
--- UNIT CONVERSION: Mekanism stores energy internally in Joules, not FE
--- -- JOULES_PER_FE below (2.5, Mekanism's own published conversion
--- ratio) converts every raw NBT value to FE before broadcasting, so
--- ../dashboard/run.lua's FE-based formatting stays correct. If numbers
--- on the dashboard look exactly 2.5x too high, this ratio or which
--- fields actually need it is wrong -- check the raw values in the log
--- against what the block's own GUI shows.
+-- Don't wget this file directly to install it -- see install.lua in
+-- this same folder, or the repo root README's "Installing a script
+-- in-game".
 --
--- WIRING:
---   - Block Reader (Advanced Peripherals) placed FACING the Induction
---     Casing -- reads whatever block is directly in front of it.
---   - A WIRELESS or ENDER modem (not Wired) on any other free side --
---     see ../energy-detector-broadcaster/README.md's troubleshooting
---     section for how a Wired Modem mistake was found last time.
+-- WIRING: this computer must be placed directly adjacent to (or on the
+-- same Wired Modem network as) the INDUCTION PORT block specifically --
+-- not the Casing. This is a direct peripheral connection; no Block
+-- Reader is used or needed here at all.
+--
+-- ENERGY UNITS: Mekanism's own methods return raw Joules, not FE. If
+-- `mekanismEnergyHelper` (Mekanism's own CC:Tweaked conversion library)
+-- is present as a global, its `joulesToFE()` is used -- the mod's own
+-- conversion, not a guessed ratio. Falls back to dividing by
+-- JOULES_PER_FE (2.5, Mekanism's published ratio) if that global isn't
+-- available -- same defensive fallback the reference script itself uses.
 --
 -- RESILIENCE: each broadcast cycle runs inside its own pcall, not just
 -- the one wrapping the whole script -- see ../README.md's "every timed
@@ -52,26 +51,13 @@
 -- check; this is the only way to confirm from the terminal/log alone
 -- that a reboot actually picked up the latest push instead of an old
 -- fetch, without re-running anything by hand.
-local SCRIPT_VERSION = "2026-09-18.1"
+local SCRIPT_VERSION = "2026-09-18.2"
 
-local CELL_CHANNEL = 6701 -- must match CELL_CHANNEL in ../dashboard/run.lua
-local FLOW_CHANNEL = 6702 -- must match FLOW_CHANNEL in ../dashboard/run.lua
+local CHANNEL = 6703 -- must match CHANNEL in ../induction-dashboard/run.lua
 local INTERVAL_SECONDS = 1
+local JOULES_PER_FE = 2.5 -- fallback only -- used when mekanismEnergyHelper isn't available
 local LOG_FILE = "induction-broadcast.log"
 local LOG_MAX_LINES = 50
-local INT32_MAX = 2147483647
-
--- Mekanism's Joules-to-FE ratio (Mekanism's own conversion constant --
--- FE = Joules / 2.5). Set to 1 if a debug dump shows the NBT is somehow
--- already in FE.
-local JOULES_PER_FE = 2.5
-
--- First matching candidate wins -- see the FIELD NAMES note above for
--- why there's a list per value instead of one guessed name each.
-local CAPACITY_FIELDS = { "maxEnergy", "energyCapacity", "capacity", "EnergyCapacity", "storageCap" }
-local ENERGY_FIELDS = { "energy", "storedEnergy", "energyStored", "Energy" }
-local INPUT_FIELDS = { "lastInput", "inputRate", "energyInput", "receiveRate", "lastReceived", "input" }
-local OUTPUT_FIELDS = { "lastOutput", "outputRate", "energyOutput", "extractRate", "lastExtracted", "output" }
 
 -- ---------------------------------------------------------------------
 -- Logging: prints live and keeps a bounded on-disk history. Oldest
@@ -95,50 +81,14 @@ local function log(fmt, ...)
   end
 end
 
--- Dumps every top-level key (and one level into any nested table) to
--- the log -- only called when an expected field is missing, so this
--- never fires during routine operation, only when the FIELDS constants
--- above need fixing. Same diagnostic ../debug-induction-reader.lua
--- prints standalone, inlined here so a wrong guess is self-diagnosing
--- without needing to re-run a separate tool.
-local function logAvailableFields(data)
-  log("Available top-level NBT fields:")
-  for k, v in pairs(data) do
-    if type(v) == "table" then
-      log("  %s (table):", tostring(k))
-      for k2, v2 in pairs(v) do
-        log("    %s (%s) = %s", tostring(k2), type(v2), tostring(v2))
-      end
-    else
-      log("  %s (%s) = %s", tostring(k), type(v), tostring(v))
-    end
+-- Mekanism's own conversion helper, when available, beats a hardcoded
+-- ratio -- see the ENERGY UNITS note above.
+local usingHelper = _G.mekanismEnergyHelper ~= nil and _G.mekanismEnergyHelper.joulesToFE ~= nil
+local function toFE(joules)
+  if usingHelper then
+    return _G.mekanismEnergyHelper.joulesToFE(joules)
   end
-end
-
--- Returns the value of the first candidate name present in `data`, plus
--- which name matched (for logging), or nil if none were found.
-local function findField(data, candidates)
-  for _, name in ipairs(candidates) do
-    if data[name] ~= nil then
-      return data[name], name
-    end
-  end
-  return nil, nil
-end
-
--- Mekanism's FloatingLong energy type MIGHT serialize as a nested table
--- instead of a plain number (see the FIELD NAMES note above) -- this
--- only handles the plain-number case and errors clearly on anything
--- else, rather than silently misreading a table as a huge/garbage
--- number via tostring/tonumber coercion.
-local function requireNumber(value, fieldName, matchedName)
-  if type(value) == "number" then
-    return value
-  end
-  error(("field '%s' (matched NBT key '%s') is a %s, not a number -- " ..
-    "Mekanism's FloatingLong energy type may be serializing as a nested " ..
-    "table here; check the log's field dump and adjust the code to read " ..
-    "the right sub-field"):format(fieldName, tostring(matchedName), type(value)), 0)
+  return joules / JOULES_PER_FE
 end
 
 -- Returns a short problem description, or nil if the reading looks sane.
@@ -148,9 +98,6 @@ local function detectAnomaly(energy, maxEnergy)
   if energy < 0 then return "energy is negative" end
   if maxEnergy < 0 then return "maxEnergy is negative" end
   if energy > maxEnergy then return "energy > maxEnergy" end
-  if energy == INT32_MAX and maxEnergy > INT32_MAX then
-    return "clamped at int32 max"
-  end
   return nil
 end
 
@@ -161,9 +108,9 @@ end
 -- ---------------------------------------------------------------------
 
 local ok, err = pcall(function()
-  local reader = peripheral.find("block_reader")
-  if not reader then
-    error("no 'block_reader' peripheral found -- attach a Block Reader (Advanced Peripherals) facing the Induction Casing", 0)
+  local port = peripheral.find("inductionPort")
+  if not port then
+    error("no 'inductionPort' peripheral found -- this computer must be placed directly adjacent to (or wired-networked to) the Induction PORT block specifically, not the Casing -- see this folder's README.md", 0)
   end
 
   local modem = peripheral.find("modem")
@@ -174,57 +121,39 @@ local ok, err = pcall(function()
     error("the attached modem is a Wired Modem -- broadcasts need a Wireless or Ender Modem to reach the dashboard", 0)
   end
 
-  -- Reads all four values in one pass, converts Joules -> FE, and
-  -- raises a clear, specific error (which field, which candidates were
-  -- tried) the moment something's missing -- instead of reading three
-  -- fields fine and only failing confusingly on the fourth.
-  local function readInduction()
-    local data = reader.getBlockData()
-    if not data then
-      error("getBlockData() returned nil -- is the Block Reader actually facing the Induction Casing?", 0)
-    end
-
-    local rawCapacity, capacityName = findField(data, CAPACITY_FIELDS)
-    local rawEnergy, energyName = findField(data, ENERGY_FIELDS)
-    local rawInput, inputName = findField(data, INPUT_FIELDS)
-    local rawOutput, outputName = findField(data, OUTPUT_FIELDS)
-
-    if not (rawCapacity and rawEnergy and rawInput and rawOutput) then
-      logAvailableFields(data)
-      local missing = {}
-      if not rawCapacity then table.insert(missing, "capacity (tried: " .. table.concat(CAPACITY_FIELDS, ", ") .. ")") end
-      if not rawEnergy then table.insert(missing, "energy (tried: " .. table.concat(ENERGY_FIELDS, ", ") .. ")") end
-      if not rawInput then table.insert(missing, "input rate (tried: " .. table.concat(INPUT_FIELDS, ", ") .. ")") end
-      if not rawOutput then table.insert(missing, "output rate (tried: " .. table.concat(OUTPUT_FIELDS, ", ") .. ")") end
-      error("none of the configured field names matched for: " .. table.concat(missing, "; ") ..
-        " -- see the field dump just logged above and fix the *_FIELDS constants at the top of this file", 0)
-    end
-
-    local capacity = requireNumber(rawCapacity, "capacity", capacityName) / JOULES_PER_FE
-    local energy = requireNumber(rawEnergy, "energy", energyName) / JOULES_PER_FE
-    local input = requireNumber(rawInput, "input", inputName) / JOULES_PER_FE
-    local output = requireNumber(rawOutput, "output", outputName) / JOULES_PER_FE
-
-    return energy, capacity, input, output
+  local function readMatrix()
+    local energy = toFE(port.getEnergy())
+    local maxEnergy = toFE(port.getMaxEnergy())
+    local percentage = port.getEnergyFilledPercentage() -- 0..1, Mekanism's own computation
+    local input = toFE(port.getLastInput())
+    local output = toFE(port.getLastOutput())
+    local transferCap = toFE(port.getTransferCap())
+    return energy, maxEnergy, percentage, input, output, transferCap
   end
 
-  local probeOk, probeEnergy, probeCapacity = pcall(readInduction)
+  local probeOk, probeEnergy, probeMax = pcall(readMatrix)
   if not probeOk then
     error(tostring(probeEnergy), 0)
   end
 
-  log("READY v%s -- induction matrix=%.0f/%.0f FE, broadcasting kind=ender_cell on ch.%d and kind=energy_flow on ch.%d every %ds",
-    SCRIPT_VERSION, probeEnergy, probeCapacity, CELL_CHANNEL, FLOW_CHANNEL, INTERVAL_SECONDS)
+  log("READY v%s -- induction matrix=%.0f/%.0f FE (unit conversion via %s), broadcasting kind=induction_matrix on ch.%d every %ds",
+    SCRIPT_VERSION, probeEnergy, probeMax, usingHelper and "mekanismEnergyHelper" or ("raw/" .. JOULES_PER_FE .. " fallback"), CHANNEL, INTERVAL_SECONDS)
 
-  local startupAnomaly = detectAnomaly(probeEnergy, probeCapacity)
+  local startupAnomaly = detectAnomaly(probeEnergy, probeMax)
   if startupAnomaly then
-    log("GUARD: %s (energy=%s, maxEnergy=%s)", startupAnomaly, tostring(probeEnergy), tostring(probeCapacity))
+    log("GUARD: %s (energy=%s, maxEnergy=%s)", startupAnomaly, tostring(probeEnergy), tostring(probeMax))
   end
   local lastAnomaly = startupAnomaly
   local lastActive = nil -- nil = unknown yet, else true/false on net flow ~= 0
 
+  -- Tracks actual observed energy change between cycles (not just
+  -- input-output) for changePerSecond/ETA -- see this folder's
+  -- README.md's ADR for why that's measured rather than derived.
+  local previousEnergy = probeEnergy
+  local previousT = os.epoch("utc")
+
   while true do
-    local readOk, energy, capacity, input, output = pcall(readInduction)
+    local readOk, energy, maxEnergy, percentage, input, output, transferCap = pcall(readMatrix)
 
     if readOk then
       -- Own pcall: modem.transmit() can fail too (modem detached for an
@@ -233,43 +162,45 @@ local ok, err = pcall(function()
       -- cycle. See ../README.md's "every timed cycle wrapped in its own
       -- pcall" ADR.
       local cycleOk, cycleErr = pcall(function()
-        modem.transmit(CELL_CHANNEL, CELL_CHANNEL, {
-          kind = "ender_cell",
-          t = os.epoch("utc"),
+        local now = os.epoch("utc")
+        local elapsedSeconds = math.max((now - previousT) / 1000, 0.001)
+        local changePerSecond = (energy - previousEnergy) / elapsedSeconds
+        previousEnergy, previousT = energy, now
+
+        local etaSeconds = nil
+        if changePerSecond > 0 then
+          etaSeconds = (maxEnergy - energy) / changePerSecond
+        elseif changePerSecond < 0 then
+          etaSeconds = energy / -changePerSecond
+        end
+
+        modem.transmit(CHANNEL, CHANNEL, {
+          kind = "induction_matrix",
+          t = now,
           energy = energy,
-          maxEnergy = capacity,
+          maxEnergy = maxEnergy,
+          percentage = percentage,
+          input = input,
+          output = output,
+          netFlow = input - output,
+          transferCap = transferCap,
+          changePerSecond = changePerSecond,
+          etaSeconds = etaSeconds,
         })
 
-        -- Net flow (input - output) is the single signed number
-        -- ../dashboard/run.lua's graph/Total line expects; input and
-        -- output are ALSO sent as two synthetic "sources" so the
-        -- dashboard's existing per-source breakdown shows both
-        -- directions separately, not just their difference -- no
-        -- dashboard code change needed for either.
-        local netFlow = input - output
-        modem.transmit(FLOW_CHANNEL, FLOW_CHANNEL, {
-          kind = "energy_flow",
-          t = os.epoch("utc"),
-          totalFlowFEt = netFlow,
-          sources = {
-            { name = "input", rateFEt = input },
-            { name = "output", rateFEt = -output },
-          },
-        })
-
-        local anomaly = detectAnomaly(energy, capacity)
+        local anomaly = detectAnomaly(energy, maxEnergy)
         if anomaly ~= lastAnomaly then
           if anomaly then
-            log("GUARD: %s (energy=%s, maxEnergy=%s)", anomaly, tostring(energy), tostring(capacity))
+            log("GUARD: %s (energy=%s, maxEnergy=%s)", anomaly, tostring(energy), tostring(maxEnergy))
           else
-            log("GUARD: reading back to normal (energy=%s, maxEnergy=%s)", tostring(energy), tostring(capacity))
+            log("GUARD: reading back to normal (energy=%s, maxEnergy=%s)", tostring(energy), tostring(maxEnergy))
           end
           lastAnomaly = anomaly
         end
 
-        local active = netFlow ~= 0
+        local active = (input - output) ~= 0
         if active ~= lastActive then
-          log("Net flow: %s (in=%.0f out=%.0f net=%.0f FE/t)", active and "ACTIVE" or "IDLE", input, output, netFlow)
+          log("Net flow: %s (in=%.0f out=%.0f net=%.0f FE/t)", active and "ACTIVE" or "IDLE", input, output, input - output)
           lastActive = active
         end
       end)
