@@ -33,8 +33,13 @@ scripts/
 │   │   ├── startup.lua
 │   │   ├── install.lua
 │   │   └── README.md
-│   └── induction-dashboard/       Mekanism setup's OWN dashboard -- listens on ch. 6703 only
-│       ├── run.lua
+│   ├── induction-dashboard/       Mekanism setup's OWN dashboard -- listens on ch. 6703 only
+│   │   ├── run.lua
+│   │   ├── startup.lua
+│   │   ├── install.lua
+│   │   └── README.md
+│   └── signal-relay/              optional: extends Wireless Modem range for EITHER setup
+│       ├── run.lua                   rebroadcasts 6701/6702/6703, same-dimension only
 │       ├── startup.lua
 │       ├── install.lua
 │       └── README.md
@@ -95,6 +100,9 @@ wget run https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/powa
 -- OR Mekanism Induction Matrix setup (two computers, its own dashboard):
 wget run https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/powah-energy-monitor/induction-broadcaster/install.lua
 wget run https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/powah-energy-monitor/induction-dashboard/install.lua
+
+-- Optional, either setup, if broadcaster and dashboard are too far apart for one Wireless Modem hop:
+wget run https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/powah-energy-monitor/signal-relay/install.lua
 
 -- Unrelated features:
 wget run https://raw.githubusercontent.com/quentinjuarez/atm10/main/scripts/photo-viewer/install.lua

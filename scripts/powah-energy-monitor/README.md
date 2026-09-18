@@ -10,6 +10,8 @@ See each computer's own `README.md` for wiring and decisions specific to it — 
 
 **Got a Mekanism Induction Matrix instead of a Powah Ender Cell?** [`induction-broadcaster/`](induction-broadcaster/) reads capacity, stored energy, input/output FE/t, and more directly from the Induction Port's own native peripheral (Mekanism's built-in ComputerCraft integration — NOT a Block Reader; see that folder's README for why), replacing `ender-cell-broadcaster` + `energy-detector-broadcaster` with a single computer. It broadcasts on its own channel (6703) with its own dedicated dashboard, [`induction-dashboard/`](induction-dashboard/) — not the `dashboard/` below, which keeps serving the Powah pair unchanged. Both full setups are kept in the repo; use whichever matches your actual power source.
 
+**Broadcaster and dashboard too far apart for a plain Wireless Modem to reach?** [`signal-relay/`](signal-relay/) is a third, generic computer that rebroadcasts any of this repo's channels to extend effective range without swapping to an Ender Modem — works for either setup above unmodified. Only fixes distance within the same dimension; a plain Wireless Modem still can't cross dimensions at all, relayed or not.
+
 ## Layout
 
 ```
@@ -37,11 +39,16 @@ powah-energy-monitor/
 │   ├── startup.lua
 │   ├── install.lua
 │   └── README.md                       ADR: the two dead ends tried first, then the real fix
-└── induction-dashboard/            Mekanism setup's OWN dashboard, ch. 6703 only
-    ├── run.lua
+├── induction-dashboard/            Mekanism setup's OWN dashboard, ch. 6703 only
+│   ├── run.lua
+│   ├── startup.lua
+│   ├── install.lua
+│   └── README.md                       ADR: one state track, shows everything the Port exposes
+└── signal-relay/                   Optional: extends range for EITHER setup above
+    ├── run.lua                         rebroadcasts 6701/6702/6703, dimension-bound like any Wireless Modem
     ├── startup.lua
     ├── install.lua
-    └── README.md                       ADR: one state track, shows everything the Port exposes
+    └── README.md                       ADR: dedup by message `t`, what a relay can't fix
 ```
 
 ## ADR: three computers, not one reading + displaying everything
