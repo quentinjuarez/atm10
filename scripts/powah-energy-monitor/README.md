@@ -8,22 +8,30 @@ Three-computer system, one dashboard receiving two independent broadcasts:
 
 See each computer's own `README.md` for wiring and decisions specific to it — this file only covers what's shared between all three.
 
+**Got a Mekanism Induction Matrix instead of a Powah Ender Cell?** [`induction-broadcaster/`](induction-broadcaster/) reads capacity, stored energy, AND input/output FE/t all from one Block Reader on the Induction Casing, replacing `ender-cell-broadcaster` + `energy-detector-broadcaster` with a single computer — same channels, same message shapes, `dashboard/` needs no changes either way. Both broadcaster setups are kept in the repo; use whichever matches your actual power source.
+
 ## Layout
 
 ```
 powah-energy-monitor/
 ├── debug-block-reader.lua        one-off diagnostic (see ender-cell-broadcaster/README.md)
-├── ender-cell-broadcaster/
+├── debug-induction-reader.lua    same, for a Mekanism Induction Matrix casing
+├── ender-cell-broadcaster/       Powah setup: storage level only
 │   ├── run.lua                      the real logic — install via install.lua, not directly
 │   ├── startup.lua                   fetched by install.lua, saved locally as startup.lua
 │   ├── install.lua                   run once: wget run install.lua
 │   └── README.md                     ADR: why Block Reader, channel/kind, logging
-├── energy-detector-broadcaster/
+├── energy-detector-broadcaster/  Powah setup: flow only
 │   ├── run.lua
 │   ├── startup.lua
 │   ├── install.lua
 │   └── README.md                     ADR: why every Energy Detector, not one generator peripheral
-└── dashboard/
+├── induction-broadcaster/        Mekanism setup: replaces BOTH computers above
+│   ├── run.lua
+│   ├── startup.lua
+│   ├── install.lua
+│   └── README.md                     ADR: one computer instead of two, field names unconfirmed
+└── dashboard/                    same dashboard, works with either broadcaster setup
     ├── run.lua
     ├── startup.lua
     ├── install.lua
